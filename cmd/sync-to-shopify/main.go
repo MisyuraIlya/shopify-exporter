@@ -5,4 +5,7 @@ import "shopify-exporter/internal/config"
 
 func main() {
 	cfg, err := config.LoadForSyncOrder()
+	if err != nil {
+		return
+	}
 }
