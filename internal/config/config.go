@@ -2,11 +2,17 @@ package config
 
 import "time"
 
-type Config struct {
+type DailyConfig struct {
 	Shopify     ShopifyConfig
-	Mysql       MysqlConfig
 	ApiHasav    ApiHasvConfig
 	TelegramBot TelegramBotConfig
+}
+
+type OrdersConfig struct {
+	Mysql       MysqlConfig
+	TelegramBot TelegramBotConfig
+	Shopify     ShopifyConfig
+	ApiHasav    ApiHasvConfig
 }
 
 type ShopifyConfig struct {
@@ -17,7 +23,7 @@ type ShopifyConfig struct {
 
 type MysqlConfig struct {
 	Host     string
-	Port     int8
+	Port     int
 	Username string
 	Password string
 	Database string

@@ -1,6 +1,8 @@
 // Daily jon fetcher from api to shopify
 package main
 
-func main() {
+import "shopify-exporter/internal/config"
 
+func main() {
+	cfg, err := config.LoadForDailySync()
 }
