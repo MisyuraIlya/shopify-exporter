@@ -2,19 +2,19 @@
 package main
 
 import (
+	"fmt"
 	"shopify-exporter/internal/config"
-	"shopify-exporter/internal/infra/mysql"
+	"shopify-exporter/internal/logging"
 )
 
 func main() {
 	cfg, err := config.LoadForSyncOrder()
 	if err != nil {
+		fmt.Printf("error %v\n", err)
 		return
 	}
-	db, err := mysql.New(cfg.Mysql)
+	logger := logging.NewLogger(cfg.TelegramBot)
 
-	if err != nil {
-		return
-	}
+	logger.Log("Docker initialized start work..")
 
 }

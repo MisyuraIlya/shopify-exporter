@@ -3,6 +3,7 @@ package main
 
 import (
 	"shopify-exporter/internal/config"
+	"shopify-exporter/internal/logging"
 )
 
 func main() {
@@ -10,5 +11,6 @@ func main() {
 	if err != nil {
 		return
 	}
+	logging.NewLogger(cfg.TelegramBot)
 
 }

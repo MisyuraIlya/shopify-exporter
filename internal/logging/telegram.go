@@ -33,12 +33,12 @@ const (
 	iconSuccess = "✅"
 )
 
-func NewLogger(cfg *Creds) LoggerService {
-	if cfg == nil || cfg.Creds.ChatId == "" || cfg.Creds.Token == "" {
+func NewLogger(cfg config.TelegramBotConfig) LoggerService {
+	if cfg.ChatId == "" || cfg.Token == "" {
 		fmt.Println("[WARNING]: telegram credentials missing")
 		return nil
 	}
-	return &Creds{Creds: cfg.Creds}
+	return &Creds{Creds: cfg}
 }
 
 func (c *Creds) Log(value string) {
@@ -103,6 +103,5 @@ func (c *Creds) sendRequest(value string) error {
 		return fmt.Errorf("telegram send failed: %s", resp.Status)
 	}
 
-	fmt.Println("ok:", string(respBody))
 	return nil
 }

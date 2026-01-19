@@ -28,7 +28,7 @@ func intWithDefault(key string, def int) (int, error) {
 	if !isOk || variable == "" {
 		return def, nil
 	}
-	number, err := strconv.Atoi(key)
+	number, err := strconv.Atoi(variable)
 	if err != nil {
 		return 0, fmt.Errorf("Invalid int for %s: %w", key, err)
 	}
@@ -41,13 +41,11 @@ func durationWithDefualt(key string, def time.Duration) (time.Duration, error) {
 		return def, nil
 	}
 
-	d, err := time.ParseDuration(key)
-
+	number, err := strconv.Atoi(variable)
 	if err != nil {
 		return 0, fmt.Errorf("Invalid duration for %s: %w", key, err)
 	}
-
-	return d, nil
+	return time.Duration(number) * time.Millisecond, nil
 }
 
 func LoadForDailySync() (*DailyConfig, error) {
@@ -66,9 +64,9 @@ func LoadForDailySync() (*DailyConfig, error) {
 	}
 
 	cfgShopify := ShopifyConfig{
-		BaseUrl: shopifyBaseUrl,
-		Token:   shopifyToken,
-		Timeout: shopifyDuration,
+		ShopDomain: shopifyBaseUrl,
+		Token:      shopifyToken,
+		Timeout:    shopifyDuration,
 	}
 
 	hasavBaseUrl, err := requriedString("API_BASE_URL")
@@ -120,9 +118,9 @@ func LoadForSyncOrder() (*OrdersConfig, error) {
 	}
 
 	cfgShopify := ShopifyConfig{
-		BaseUrl: shopifyBaseUrl,
-		Token:   shopifyToken,
-		Timeout: shopifyDuration,
+		ShopDomain: shopifyBaseUrl,
+		Token:      shopifyToken,
+		Timeout:    shopifyDuration,
 	}
 
 	hasavBaseUrl, err := requriedString("API_BASE_URL")
