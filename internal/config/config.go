@@ -16,9 +16,10 @@ type OrdersConfig struct {
 }
 
 type ShopifyConfig struct {
-	BaseUrl string
-	Token   string
-	Timeout time.Duration
+	ShopDomain string
+	Token      string
+	APIVer     string
+	Timeout    time.Duration
 }
 
 type MysqlConfig struct {

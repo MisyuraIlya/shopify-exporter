@@ -1,0 +1,88 @@
+# ----------------------------
+# Go build artifacts
+# ----------------------------
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Binaries (common names)
+main
+app
+bin/
+dist/
+build/
+out/
+
+# Go workspace / modules
+go.work
+go.work.sum
+
+# Vendor (choose one approach: keep vendor OR ignore it)
+vendor/
+
+# ----------------------------
+# Test / coverage outputs
+# ----------------------------
+coverage.out
+coverage.txt
+*.coverprofile
+*.prof
+*.pprof
+*.trace
+*.bench
+*.benchstat
+
+# ----------------------------
+# Logs & runtime files
+# ----------------------------
+*.log
+*.pid
+*.sock
+
+# ----------------------------
+# IDE / editor
+# ----------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+*~
+.DS_Store
+
+# ----------------------------
+# OS / tooling
+# ----------------------------
+Thumbs.db
+
+# ----------------------------
+# Env / secrets (common patterns)
+# ----------------------------
+.env
+.env.*
+*.local
+*.secret
+*.secrets
+*.pem
+*.key
+
+# ----------------------------
+# Docker / Compose overrides
+# ----------------------------
+docker-compose.override.yml
+
+# ----------------------------
+# Temporary directories
+# ----------------------------
+tmp/
+temp/
+.cache/
+
+# ----------------------------
+# Optional: Goland / JetBrains Go plugin files
+# ----------------------------
+*.iml
