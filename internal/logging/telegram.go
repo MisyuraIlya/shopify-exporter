@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"shopify-exporter/internal/config"
 	"strings"
+	"time"
 )
 
 type LoggerService interface {
@@ -24,6 +25,15 @@ type Creds struct {
 type telegramRequest struct {
 	ChatId string `json:"chat_id"`
 	Text   string `json:"text"`
+}
+
+type telegramErrorResponse struct {
+	OK          bool   `json:"ok"`
+	ErrorCode   int    `json:"error_code"`
+	Description string `json:"description"`
+	Parameters  struct {
+		RetryAfter int `json:"retry_after"`
+	} `json:"parameters"`
 }
 
 const (
@@ -98,18 +108,30 @@ func (c *Creds) sendRequest(value string) error {
 		return err
 	}
 
-	resp, err := http.Post(url, "application/json", bytes.NewReader(bodyBytes))
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
+	for attempt := 0; attempt < 2; attempt++ {
+		resp, err := http.Post(url, "application/json", bytes.NewReader(bodyBytes))
+		if err != nil {
+			return err
+		}
 
-	respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			return nil
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests && attempt == 0 {
+			var errResp telegramErrorResponse
+			if json.Unmarshal(respBody, &errResp) == nil && errResp.Parameters.RetryAfter > 0 {
+				time.Sleep(time.Duration(errResp.Parameters.RetryAfter) * time.Second)
+				continue
+			}
+		}
+
 		fmt.Printf("failed: %s\n%s\n", resp.Status, string(respBody))
 		return fmt.Errorf("telegram send failed: %s", resp.Status)
 	}
 
-	return nil
+	return fmt.Errorf("telegram send failed: too many requests")
 }

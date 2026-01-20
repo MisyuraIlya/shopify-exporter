@@ -59,17 +59,6 @@ func (c *Client) CreateProduct(ctx context.Context, product model.Product) error
 		input["descriptionHtml"] = product.Description
 	}
 
-	variantInput := map[string]any{}
-	if strings.TrimSpace(product.Sku) != "" {
-		variantInput["sku"] = product.Sku
-	}
-	if strings.TrimSpace(product.Barcode) != "" {
-		variantInput["barcode"] = product.Barcode
-	}
-	if len(variantInput) > 0 {
-		input["variants"] = []map[string]any{variantInput}
-	}
-
 	query := `
 mutation productCreate($input: ProductInput!) {
 	productCreate(input: $input) {
@@ -85,7 +74,13 @@ mutation productCreate($input: ProductInput!) {
 	if err != nil {
 		return err
 	}
-	return userErrorsToError("productCreate", data.ProductCreate.UserErrors)
+	if err := userErrorsToError("productCreate", data.ProductCreate.UserErrors); err != nil {
+		return err
+	}
+	if data.ProductCreate.Product == nil || strings.TrimSpace(data.ProductCreate.Product.ID) == "" {
+		return errors.New("shopify product create returned empty product id")
+	}
+	return c.updatePrimaryVariantIdentifiers(ctx, data.ProductCreate.Product.ID, product.Sku, product.Barcode)
 }
 
 func (c *Client) UpdateProduct(ctx context.Context, product model.Product, productGid string) error {
@@ -127,42 +122,7 @@ mutation productUpdate($input: ProductInput!) {
 		return err
 	}
 
-	if strings.TrimSpace(product.Sku) == "" && strings.TrimSpace(product.Barcode) == "" {
-		return nil
-	}
-
-	variantID, err := c.getPrimaryVariantID(ctx, productGid)
-	if err != nil {
-		return err
-	}
-	if variantID == "" {
-		return errors.New("shopify product has no variants to update")
-	}
-
-	variantInput := map[string]any{"id": variantID}
-	if strings.TrimSpace(product.Sku) != "" {
-		variantInput["sku"] = product.Sku
-	}
-	if strings.TrimSpace(product.Barcode) != "" {
-		variantInput["barcode"] = product.Barcode
-	}
-
-	variantQuery := `
-mutation productVariantUpdate($input: ProductVariantInput!) {
-	productVariantUpdate(input: $input) {
-		productVariant { id }
-		userErrors { field message }
-	}
-}`
-
-	var variantData productVariantUpdateData
-	err = c.graphqlRequest(ctx, variantQuery, map[string]any{
-		"input": variantInput,
-	}, &variantData)
-	if err != nil {
-		return err
-	}
-	return userErrorsToError("productVariantUpdate", variantData.ProductVariantUpdate.UserErrors)
+	return c.updatePrimaryVariantIdentifiers(ctx, productGid, product.Sku, product.Barcode)
 }
 
 func (c *Client) CheckExistProductBySku(product model.Product) (bool, string) {
@@ -349,13 +309,13 @@ type productVariantSearchData struct {
 	} `json:"productVariants"`
 }
 
-type productVariantUpdateData struct {
-	ProductVariantUpdate struct {
-		ProductVariant *struct {
+type productVariantsBulkUpdateData struct {
+	ProductVariantsBulkUpdate struct {
+		ProductVariants []struct {
 			ID string `json:"id,omitempty"`
-		} `json:"productVariant,omitempty"`
+		} `json:"productVariants,omitempty"`
 		UserErrors []dto.ShopifyUserError `json:"userErrors,omitempty"`
-	} `json:"productVariantUpdate"`
+	} `json:"productVariantsBulkUpdate"`
 }
 
 func (c *Client) graphqlRequest(ctx context.Context, query string, variables map[string]any, out any) error {
@@ -438,6 +398,48 @@ query productVariant($id: ID!) {
 		return "", nil
 	}
 	return strings.TrimSpace(data.Product.Variants.Nodes[0].ID), nil
+}
+
+func (c *Client) updatePrimaryVariantIdentifiers(ctx context.Context, productGid string, sku string, barcode string) error {
+	if strings.TrimSpace(sku) == "" && strings.TrimSpace(barcode) == "" {
+		return nil
+	}
+
+	variantID, err := c.getPrimaryVariantID(ctx, productGid)
+	if err != nil {
+		return err
+	}
+	if variantID == "" {
+		return errors.New("shopify product has no variants to update")
+	}
+
+	variantInput := map[string]any{"id": variantID}
+	if strings.TrimSpace(sku) != "" {
+		variantInput["inventoryItem"] = map[string]any{
+			"sku": sku,
+		}
+	}
+	if strings.TrimSpace(barcode) != "" {
+		variantInput["barcode"] = barcode
+	}
+
+	variantQuery := `
+mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+	productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+		productVariants { id }
+		userErrors { field message }
+	}
+}`
+
+	var variantData productVariantsBulkUpdateData
+	err = c.graphqlRequest(ctx, variantQuery, map[string]any{
+		"productId": productGid,
+		"variants":  []map[string]any{variantInput},
+	}, &variantData)
+	if err != nil {
+		return err
+	}
+	return userErrorsToError("productVariantsBulkUpdate", variantData.ProductVariantsBulkUpdate.UserErrors)
 }
 
 func productStatus(isPublished bool) string {
