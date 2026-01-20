@@ -58,7 +58,12 @@ func LoadForDailySync() (*DailyConfig, error) {
 		return nil, err
 	}
 
-	shopifyDuration, err := durationWithDefualt("SHOPIFT_DURATION_MS", 5000)
+	shopifyDuration, err := durationWithDefualt("SHOPIFY_DURATION_MS", 5000)
+	if err != nil {
+		return nil, err
+	}
+
+	shopifyVersion, err := requriedString("SHOPIFY_API_VERSION")
 	if err != nil {
 		return nil, err
 	}
@@ -67,6 +72,7 @@ func LoadForDailySync() (*DailyConfig, error) {
 		ShopDomain: shopifyBaseUrl,
 		Token:      shopifyToken,
 		Timeout:    shopifyDuration,
+		APIVer:     shopifyVersion,
 	}
 
 	hasavBaseUrl, err := requriedString("API_BASE_URL")
@@ -112,7 +118,7 @@ func LoadForSyncOrder() (*OrdersConfig, error) {
 		return nil, err
 	}
 
-	shopifyDuration, err := durationWithDefualt("SHOPIFT_DURATION_MS", 5000)
+	shopifyDuration, err := durationWithDefualt("SHOPIFY_DURATION_MS", 5000)
 	if err != nil {
 		return nil, err
 	}
