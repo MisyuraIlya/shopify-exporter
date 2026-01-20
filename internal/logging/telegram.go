@@ -12,7 +12,7 @@ import (
 
 type LoggerService interface {
 	Log(value string)
-	LogError(value string)
+	LogError(value string, err error)
 	LogWarning(value string)
 	LogSuccess(value string)
 }
@@ -48,11 +48,19 @@ func (c *Creds) Log(value string) {
 	_ = c.sendRequest(formatMessage(iconInfo, "INFO", value))
 }
 
-func (c *Creds) LogError(value string) {
+func (c *Creds) LogError(value string, err error) {
 	if c == nil {
 		return
 	}
-	_ = c.sendRequest(formatMessage(iconError, "ERROR", value))
+	msg := value
+	if err != nil {
+		if strings.TrimSpace(msg) == "" {
+			msg = err.Error()
+		} else {
+			msg = fmt.Sprintf("%s\nerror: %s", msg, err.Error())
+		}
+	}
+	_ = c.sendRequest(formatMessage(iconError, "ERROR", msg))
 }
 
 func (c *Creds) LogWarning(value string) {

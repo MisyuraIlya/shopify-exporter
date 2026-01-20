@@ -23,31 +23,18 @@ func main() {
 	logger.Log("Docker initialized start work..")
 
 	httpClient := infrahttp.NewClient(maxDuration(cfg.Shopify.Timeout, cfg.ApiHasav.Timeout))
-
+	logger.Log("httpClient")
 	apixClient := apix.NewClient(cfg.ApiHasav, httpClient)
+	logger.Log("apixClient")
 	shopifyClient := shopify.NewClient(cfg.Shopify, httpClient)
+	logger.Log("shopifyClient")
 	syncProducts := usecases.NewSyncProducts(apixClient, shopifyClient, logger)
-
-	// if err := syncProducts.Run(context.Background()); err != nil {
-	// 	logger.LogError(err.Error())
-	// 	os.Exit(1)
-	// }
+	logger.Log("syncProducts")
+	if syncProducts != nil {
+		return
+	}
 
 	logger.LogSuccess("sync completed")
-
-	// Example structure for the sync-to-shopify entrypoint:
-	//
-	// 1) Load config (API X + Shopify credentials, timeouts, pagination limits).
-	// 2) Initialize logger/metrics.
-	// 3) Build shared HTTP client and retry/backoff helpers.
-	// 4) Create adapters:
-	//    - API X client
-	//    - Shopify client
-	// 5) Build pipeline that wires usecases (products, categories, inventory).
-	// 6) Run pipeline and handle result (log summary, set exit code on failure).
-	//
-	// Keep main.go thin: only wiring and execution. All business logic stays in
-	// internal/app/usecases and internal/app/pipeline.
 }
 
 func maxDuration(a, b time.Duration) time.Duration {
