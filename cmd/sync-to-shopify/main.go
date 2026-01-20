@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"shopify-exporter/internal/adapters/apix"
 	"shopify-exporter/internal/adapters/shopify"
@@ -30,7 +31,8 @@ func main() {
 	logger.Log("shopifyClient")
 	syncProducts := usecases.NewSyncProducts(apixClient, shopifyClient, logger)
 	logger.Log("syncProducts")
-	if syncProducts != nil {
+	if err := syncProducts.Run(context.Background()); err != nil {
+		logger.LogError("sync failed", err)
 		return
 	}
 
