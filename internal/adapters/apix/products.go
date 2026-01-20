@@ -92,5 +92,7 @@ func mapProduct(dto dto.ProductDto) model.Product {
 		Sku:         dto.ItemKey,
 		Title:       dto.ItemName,
 		Description: dto.ForignName,
+		IsPublished: dto.Status,
+		Barcode:     dto.BarCode,
 	}
 }

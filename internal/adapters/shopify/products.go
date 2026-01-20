@@ -20,6 +20,7 @@ type NewClientService interface {
 	UpdateProduct(ctx context.Context, product model.Product, productGid string) error
 	GetCollectionProducts(ctx context.Context) ([]model.Product, error)
 	UnpublishProduct(ctx context.Context, productId string) error
+	CheckExistProductBySku(product model.Product) (bool, string)
 }
 
 type Client struct {
@@ -164,6 +165,47 @@ mutation productVariantUpdate($input: ProductVariantInput!) {
 	return userErrorsToError("productVariantUpdate", variantData.ProductVariantUpdate.UserErrors)
 }
 
+func (c *Client) CheckExistProductBySku(product model.Product) (bool, string) {
+	sku := strings.TrimSpace(product.Sku)
+	if sku == "" {
+		return false, ""
+	}
+
+	queryValue := sku
+	if strings.ContainsAny(queryValue, " \"") {
+		queryValue = strings.ReplaceAll(queryValue, `"`, `\"`)
+		queryValue = fmt.Sprintf(`"%s"`, queryValue)
+	}
+	searchQuery := fmt.Sprintf("sku:%s", queryValue)
+
+	query := `
+query productVariantBySku($first: Int!, $query: String!) {
+	productVariants(first: $first, query: $query) {
+		nodes {
+			id
+			sku
+			product { id }
+		}
+	}
+}`
+
+	var data productVariantSearchData
+	err := c.graphqlRequest(context.Background(), query, map[string]any{
+		"first": 1,
+		"query": searchQuery,
+	}, &data)
+	if err != nil {
+		return false, ""
+	}
+
+	if len(data.ProductVariants.Nodes) == 0 {
+		return false, ""
+	}
+
+	gid := strings.TrimSpace(data.ProductVariants.Nodes[0].Product.ID)
+	return gid != "", gid
+}
+
 func (c *Client) GetCollectionProducts(ctx context.Context) ([]model.Product, error) {
 	const pageSize = 100
 
@@ -293,6 +335,18 @@ type productVariantLookupData struct {
 			} `json:"nodes,omitempty"`
 		} `json:"variants,omitempty"`
 	} `json:"product,omitempty"`
+}
+
+type productVariantSearchData struct {
+	ProductVariants struct {
+		Nodes []struct {
+			ID      string `json:"id,omitempty"`
+			SKU     string `json:"sku,omitempty"`
+			Product struct {
+				ID string `json:"id,omitempty"`
+			} `json:"product,omitempty"`
+		} `json:"nodes,omitempty"`
+	} `json:"productVariants"`
 }
 
 type productVariantUpdateData struct {
