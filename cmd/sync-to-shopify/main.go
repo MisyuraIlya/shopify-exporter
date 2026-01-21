@@ -27,7 +27,7 @@ func main() {
 	logger.Log("httpClient")
 	apixClient := apix.NewClient(cfg.ApiHasav, httpClient)
 	logger.Log("apixClient")
-	shopifyClient := shopify.NewClient(cfg.Shopify, httpClient)
+	shopifyClient := shopify.NewClient(cfg.Shopify, httpClient, logger)
 	logger.Log("shopifyClient")
 	syncProducts := usecases.NewSyncProducts(apixClient, shopifyClient, logger)
 	logger.Log("syncProducts")

@@ -89,10 +89,10 @@ func (c *Client) ListProducts(ctx context.Context, page, limit int) ([]model.Pro
 
 func mapProduct(dto dto.ProductDto) model.Product {
 	return model.Product{
-		Sku:         dto.ItemKey,
-		Title:       dto.ItemName,
-		Description: dto.ForignName,
-		IsPublished: dto.Status,
-		Barcode:     dto.BarCode,
+		Sku:          dto.ItemKey,
+		HebrewTitle:  dto.ItemName,
+		EnglishTitle: dto.ForignName,
+		IsPublished:  dto.Status,
+		Barcode:      dto.BarCode,
 	}
 }

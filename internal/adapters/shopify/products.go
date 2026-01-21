@@ -11,6 +11,7 @@ import (
 	"shopify-exporter/internal/adapters/shopify/dto"
 	"shopify-exporter/internal/config"
 	"shopify-exporter/internal/domain/model"
+	"shopify-exporter/internal/logging"
 	"strings"
 	"time"
 )
@@ -83,6 +84,7 @@ type productTranslationUpdateData struct {
 type NewClientService interface {
 	CreateProduct(ctx context.Context, products model.Product) error
 	UpdateProduct(ctx context.Context, product model.Product, productGid string) error
+	UpdateLocalization(ctx context.Context, product model.Product, productGid string) error
 	GetCollectionProducts(ctx context.Context) ([]model.Product, error)
 	UnpublishProduct(ctx context.Context, productId string) error
 	CheckExistProductBySku(product model.Product) (bool, string)
@@ -91,9 +93,10 @@ type NewClientService interface {
 type Client struct {
 	config     config.ShopifyConfig
 	httpClient *http.Client
+	logger     logging.LoggerService
 }
 
-func NewClient(config config.ShopifyConfig, httpClient *http.Client) NewClientService {
+func NewClient(config config.ShopifyConfig, httpClient *http.Client, logger logging.LoggerService) NewClientService {
 	if httpClient == nil {
 		timeout := config.Timeout
 		if timeout <= 0 {
@@ -104,17 +107,18 @@ func NewClient(config config.ShopifyConfig, httpClient *http.Client) NewClientSe
 	return &Client{
 		config:     config,
 		httpClient: httpClient,
+		logger:     logger,
 	}
 }
 
 func (c *Client) CreateProduct(ctx context.Context, product model.Product) error {
 
-	if product.Title == "" {
+	if product.EnglishTitle == "" {
 		return errors.New("shopify product title is required")
 	}
 
 	input := map[string]any{
-		"title":  product.Title,
+		"title":  product.EnglishTitle,
 		"status": productStatus(product.IsPublished),
 	}
 	if product.Description != "" {
@@ -163,7 +167,7 @@ func (c *Client) UpdateProduct(ctx context.Context, product model.Product, produ
 		"status": productStatus(product.IsPublished),
 	}
 
-	if title := strings.TrimSpace(product.Title); title != "" {
+	if title := strings.TrimSpace(product.EnglishTitle); title != "" {
 		input["title"] = title
 	} else if title := strings.TrimSpace(product.EnglishTitle); title != "" {
 		input["title"] = title
@@ -469,12 +473,11 @@ func mapShopifyProduct(p dto.ShopifyProduct) model.Product {
 	}
 
 	return model.Product{
-		Sku:          sku,
-		Title:        p.Title,
-		EnglishTitle: p.Title,
-		Description:  p.DescriptionHTML,
-		IsPublished:  strings.EqualFold(p.Status, "ACTIVE"),
-		Barcode:      barcode,
+		Sku:         sku,
+		HebrewTitle: p.Title,
+		Description: p.DescriptionHTML,
+		IsPublished: strings.EqualFold(p.Status, "ACTIVE"),
+		Barcode:     barcode,
 	}
 }
 
@@ -515,6 +518,26 @@ func formatGraphQLErrors(errs []dto.GraphQLError) string {
 		return "unknown graphql error"
 	}
 	return strings.Join(parts, "; ")
+}
+
+func (c *Client) UpdateLocalization(ctx context.Context, product model.Product, productGid string) error {
+	if productGid == "" {
+		return nil
+	}
+
+	translationDigest := c.getProductLocalizationDigest(ctx, productGid)
+
+	if translationDigest == "" {
+		return nil
+	}
+
+	updateLocalization := c.updateProductLocalization(ctx, translationDigest, productGid, product.HebrewTitle)
+
+	if updateLocalization != nil {
+		fmt.Printf("error %v", updateLocalization)
+	}
+
+	return nil
 }
 
 func (c *Client) getProductLocalizationDigest(ctx context.Context, productGid string) string {
