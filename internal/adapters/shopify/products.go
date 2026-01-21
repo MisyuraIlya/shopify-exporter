@@ -58,6 +58,28 @@ type productVariantsBulkUpdateData struct {
 	} `json:"productVariantsBulkUpdate"`
 }
 
+type productTranslationResourceData struct {
+	TranslatableResource *struct {
+		ResourceId          string `json:"resourceId,omitempty"`
+		TranslatableContent []struct {
+			Key    string `json:"key,omitempty"`
+			Value  string `json:"value,omitempty"`
+			Digest string `json:"digest,omitempty"`
+			Locale string `json:"locale,omitempty"`
+		} `json:"translatableContent"`
+	} `json:"translatableResource"`
+}
+
+type productTranslationUpdateData struct {
+	TranslationsRegister struct {
+		Translations []struct {
+			Key   string `json:"key,omitempty"`
+			Value string `json:"value,omitempty"`
+		} `json:"translations"`
+		UserErrors []dto.ShopifyUserError `json:"userErrors,omitempty"`
+	} `json:"translationsRegister"`
+}
+
 type NewClientService interface {
 	CreateProduct(ctx context.Context, products model.Product) error
 	UpdateProduct(ctx context.Context, product model.Product, productGid string) error
@@ -151,12 +173,12 @@ func (c *Client) UpdateProduct(ctx context.Context, product model.Product, produ
 	}
 
 	query := `
-mutation productUpdate($input: ProductInput!) {
-	productUpdate(input: $input) {
-		product { id }
-		userErrors { field message }
-	}
-}`
+	mutation productUpdate($input: ProductInput!) {
+		productUpdate(input: $input) {
+			product { id }
+			userErrors { field message }
+		}
+	}`
 
 	var data productUpdateData
 	err := c.graphqlRequest(ctx, query, map[string]any{
@@ -186,15 +208,15 @@ func (c *Client) CheckExistProductBySku(product model.Product) (bool, string) {
 	searchQuery := fmt.Sprintf("sku:%s", queryValue)
 
 	query := `
-query productVariantBySku($first: Int!, $query: String!) {
-	productVariants(first: $first, query: $query) {
-		nodes {
-			id
-			sku
-			product { id }
+	query productVariantBySku($first: Int!, $query: String!) {
+		productVariants(first: $first, query: $query) {
+			nodes {
+				id
+				sku
+				product { id }
+			}
 		}
-	}
-}`
+	}`
 
 	var data productVariantSearchData
 	err := c.graphqlRequest(context.Background(), query, map[string]any{
@@ -217,20 +239,20 @@ func (c *Client) GetCollectionProducts(ctx context.Context) ([]model.Product, er
 	const pageSize = 100
 
 	query := `
-query products($first: Int!, $after: String) {
-	products(first: $first, after: $after) {
-		nodes {
-			id
-			title
-			descriptionHtml
-			status
-			variants(first: 1) {
-				nodes { sku barcode }
+	query products($first: Int!, $after: String) {
+		products(first: $first, after: $after) {
+			nodes {
+				id
+				title
+				descriptionHtml
+				status
+				variants(first: 1) {
+					nodes { sku barcode }
+				}
 			}
+			pageInfo { hasNextPage endCursor }
 		}
-		pageInfo { hasNextPage endCursor }
-	}
-}`
+	}`
 
 	var (
 		products []model.Product
@@ -270,12 +292,12 @@ func (c *Client) UnpublishProduct(ctx context.Context, productId string) error {
 	}
 
 	query := `
-mutation productUpdate($input: ProductInput!) {
-	productUpdate(input: $input) {
-		product { id status }
-		userErrors { field message }
-	}
-}`
+	mutation productUpdate($input: ProductInput!) {
+		productUpdate(input: $input) {
+			product { id status }
+			userErrors { field message }
+		}
+	}`
 
 	var data productUpdateData
 	err := c.graphqlRequest(ctx, query, map[string]any{
@@ -493,4 +515,80 @@ func formatGraphQLErrors(errs []dto.GraphQLError) string {
 		return "unknown graphql error"
 	}
 	return strings.Join(parts, "; ")
+}
+
+func (c *Client) getProductLocalizationDigest(ctx context.Context, productGid string) string {
+	if productGid == "" {
+		return ""
+	}
+
+	query := `
+	query ($id: ID!) {
+		translatableResource(resourceId: $id) {
+			resourceId translatableContent {
+				key value digest locale
+			}
+		}
+	}`
+
+	var result productTranslationResourceData
+	err := c.graphqlRequest(ctx, query, map[string]any{
+		"id": productGid,
+	}, &result)
+
+	if err != nil {
+		fmt.Printf("error get product localization: %v\n", err)
+		return ""
+	}
+
+	if result.TranslatableResource == nil {
+		return ""
+	}
+
+	for _, v := range result.TranslatableResource.TranslatableContent {
+		if v.Key == "title" && v.Locale == "en" {
+			return v.Digest
+		}
+	}
+
+	return ""
+
+}
+
+func (c *Client) updateProductLocalization(ctx context.Context, translationDigest string, productDigit string, valueTranslation string) error {
+	if valueTranslation == "" || translationDigest == "" || productDigit == "" {
+		return nil
+	}
+
+	obj := map[string]any{
+		"locale":                    "he",
+		"key":                       "title",
+		"value":                     valueTranslation,
+		"translatableContentDigest": translationDigest,
+	}
+
+	translatinPayload := []map[string]any{obj}
+
+	paylod := map[string]any{
+		"resourceId":   productDigit,
+		"translations": translatinPayload,
+	}
+
+	variantQuery := `
+	mutation translationsRegister($resourceId: ID!, $translations: [TranslationInput!]!) {
+		translationsRegister(resourceId: $resourceId, translations: $translations) {
+			userErrors { message field } 
+			translations { key value } 
+		}
+	}`
+
+	var result productTranslationUpdateData
+
+	err := c.graphqlRequest(ctx, variantQuery, paylod, &result)
+
+	if err != nil {
+		return err
+	}
+
+	return userErrorsToError("TranslationsRegister", result.TranslationsRegister.UserErrors)
 }
