@@ -559,7 +559,7 @@ func (c *Client) shopifyAPIRequest(ctx context.Context, method string, endpoint 
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		err := fmt.Errorf("shopify request failed: %s: %s", resp.Status, strings.TrimSpace(string(respBody)))
+		err := newHTTPStatusError(resp.StatusCode, resp.Status, respBody)
 		c.logError("shopify request returned non-success status", err)
 		return nil, err
 	}
@@ -591,34 +591,50 @@ func (c *Client) graphqlRequest(ctx context.Context, query string, variables map
 		return err
 	}
 
-	raw, err := c.shopifyAPIRequest(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
-	if err != nil {
-		c.logError("shopify graphql request failed", err)
-		return err
-	}
+	for attempt := 0; attempt <= graphqlRetryMax; attempt++ {
+		raw, err := c.shopifyAPIRequest(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+		if err != nil {
+			if attempt < graphqlRetryMax && isRetryableHTTPError(err) {
+				if err := sleepWithContext(ctx, retryDelay(attempt)); err != nil {
+					return err
+				}
+				continue
+			}
+			c.logError("shopify graphql request failed", err)
+			return err
+		}
 
-	var resp dto.GraphQLResponse[json.RawMessage]
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		c.logError("shopify graphql response unmarshal failed", err)
-		return err
-	}
-	if len(resp.Errors) > 0 {
-		err := fmt.Errorf("shopify graphql errors: %s", formatGraphQLErrors(resp.Errors))
-		c.logError("shopify graphql response errors", err)
-		return err
-	}
-	if out == nil {
+		var resp dto.GraphQLResponse[json.RawMessage]
+		if err := json.Unmarshal(raw, &resp); err != nil {
+			c.logError("shopify graphql response unmarshal failed", err)
+			return err
+		}
+		if len(resp.Errors) > 0 {
+			if isThrottleGraphQLError(resp.Errors) && attempt < graphqlRetryMax {
+				if err := sleepWithContext(ctx, retryDelay(attempt)); err != nil {
+					return err
+				}
+				continue
+			}
+			err := fmt.Errorf("shopify graphql errors: %s", formatGraphQLErrors(resp.Errors))
+			c.logError("shopify graphql response errors", err)
+			return err
+		}
+		if out == nil {
+			return nil
+		}
+		if len(resp.Data) == 0 {
+			return errors.New("shopify graphql response missing data")
+		}
+		if err := json.Unmarshal(resp.Data, out); err != nil {
+			c.logError("shopify graphql data unmarshal failed", err)
+			return err
+		}
+
 		return nil
 	}
-	if len(resp.Data) == 0 {
-		return errors.New("shopify graphql response missing data")
-	}
-	if err := json.Unmarshal(resp.Data, out); err != nil {
-		c.logError("shopify graphql data unmarshal failed", err)
-		return err
-	}
 
-	return nil
+	return errors.New("shopify graphql request retries exhausted")
 }
 
 func (c *Client) getPrimaryVariantID(ctx context.Context, productGid string) (string, error) {

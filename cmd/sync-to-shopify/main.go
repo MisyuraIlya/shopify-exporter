@@ -24,14 +24,14 @@ func main() {
 
 	logger.Log("Docker initialized start work..")
 
-	// apixClient := apix.NewClient(cfg.ApiHasav, httpClient)
-	// shopifyClient := shopify.NewClient(cfg.Shopify, httpClient, logger)
-	// syncProducts := usecases.NewSyncProducts(apixClient, shopifyClient, logger)
-	// logger.Log("syncProducts")
-	// err = syncProducts.Run(context.Background())
-	// if err != nil {
-	// 	logger.LogError("syncProducts error", err)
-	// }
+	apixClient := apix.NewClient(cfg.ApiHasav, httpClient)
+	shopifyClient := shopify.NewClient(cfg.Shopify, httpClient, logger)
+	syncProducts := usecases.NewSyncProducts(apixClient, shopifyClient, logger)
+	logger.Log("syncProducts")
+	err = syncProducts.Run(context.Background())
+	if err != nil {
+		logger.LogError("syncProducts error", err)
+	}
 
 	apixClientCategory := apix.NewCategoryClientService(cfg.ApiHasav, httpClient, logger)
 	shopifyClientCategory := shopify.NewShopifyCategoryService(cfg.Shopify, httpClient, logger)

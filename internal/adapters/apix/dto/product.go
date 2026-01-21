@@ -24,7 +24,7 @@ type ProductDto struct {
 	PurchPrice         float64   `json:"PurchPrice"`
 	Note               string    `json:"Note"`
 	NoteName           string    `json:"NoteName"`
-	Orden              int64     `json:"orden"`
+	Orden              float64   `json:"orden"`
 	Purchased          float64   `json:"purchased"`
 	WebItem            int       `json:"webItem"`
 	PackQuantity       float64   `json:"packQuantity"`
