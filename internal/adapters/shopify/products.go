@@ -86,44 +86,48 @@ func NewClient(config config.ShopifyConfig, httpClient *http.Client) NewClientSe
 }
 
 func (c *Client) CreateProduct(ctx context.Context, product model.Product) error {
-	title := strings.TrimSpace(product.Title)
-	if title == "" {
-		title = strings.TrimSpace(product.EnglishTitle)
-	}
-	if title == "" {
+
+	if product.Title == "" {
 		return errors.New("shopify product title is required")
 	}
 
 	input := map[string]any{
-		"title":  title,
+		"title":  product.Title,
 		"status": productStatus(product.IsPublished),
 	}
-	if strings.TrimSpace(product.Description) != "" {
+	if product.Description != "" {
 		input["descriptionHtml"] = product.Description
 	}
 
 	query := `
-mutation productCreate($input: ProductInput!) {
-	productCreate(input: $input) {
-		product { id }
-		userErrors { field message }
-	}
-}`
+	mutation productCreate($input: ProductInput!) {
+		productCreate(input: $input) {
+			product { id }
+			userErrors { field message }
+		}
+	}`
 
 	var data dto.ProductCreateData
-	err := c.graphqlRequest(ctx, query, map[string]any{
-		"input": input,
-	}, &data)
+	err := c.graphqlRequest(ctx, query,
+		map[string]any{
+			"input": input,
+		}, &data)
+
 	if err != nil {
 		return err
 	}
-	if err := userErrorsToError("productCreate", data.ProductCreate.UserErrors); err != nil {
-		return err
+
+	errGraph := userErrorsToError("productCreate", data.ProductCreate.UserErrors)
+
+	if errGraph != nil {
+		return errGraph
 	}
-	if data.ProductCreate.Product == nil || strings.TrimSpace(data.ProductCreate.Product.ID) == "" {
+
+	if data.ProductCreate.Product == nil || data.ProductCreate.Product.ID == "" {
 		return errors.New("shopify product create returned empty product id")
 	}
-	return c.updatePrimaryVariantIdentifiers(ctx, data.ProductCreate.Product.ID, product.Sku, product.Barcode)
+
+	return c.updatePrimaryVariantIdentifiers(ctx, data.ProductCreate.Product.ID, product)
 }
 
 func (c *Client) UpdateProduct(ctx context.Context, product model.Product, productGid string) error {
@@ -165,7 +169,7 @@ mutation productUpdate($input: ProductInput!) {
 		return err
 	}
 
-	return c.updatePrimaryVariantIdentifiers(ctx, productGid, product.Sku, product.Barcode)
+	return c.updatePrimaryVariantIdentifiers(ctx, productGid, product)
 }
 
 func (c *Client) CheckExistProductBySku(product model.Product) (bool, string) {
@@ -364,13 +368,13 @@ func (c *Client) graphqlRequest(ctx context.Context, query string, variables map
 
 func (c *Client) getPrimaryVariantID(ctx context.Context, productGid string) (string, error) {
 	query := `
-query productVariant($id: ID!) {
-	product(id: $id) {
-		variants(first: 1) {
-			nodes { id }
+	query productVariant($id: ID!) {
+		product(id: $id) {
+			variants(first: 1) {
+				nodes { id }
+			}
 		}
-	}
-}`
+	}`
 
 	var data productVariantLookupData
 	err := c.graphqlRequest(ctx, query, map[string]any{
@@ -385,11 +389,7 @@ query productVariant($id: ID!) {
 	return strings.TrimSpace(data.Product.Variants.Nodes[0].ID), nil
 }
 
-func (c *Client) updatePrimaryVariantIdentifiers(ctx context.Context, productGid string, sku string, barcode string) error {
-	if strings.TrimSpace(sku) == "" && strings.TrimSpace(barcode) == "" {
-		return nil
-	}
-
+func (c *Client) updatePrimaryVariantIdentifiers(ctx context.Context, productGid string, product model.Product) error {
 	variantID, err := c.getPrimaryVariantID(ctx, productGid)
 	if err != nil {
 		return err
@@ -399,22 +399,24 @@ func (c *Client) updatePrimaryVariantIdentifiers(ctx context.Context, productGid
 	}
 
 	variantInput := map[string]any{"id": variantID}
-	if strings.TrimSpace(sku) != "" {
+
+	if product.Sku != "" {
 		variantInput["inventoryItem"] = map[string]any{
-			"sku": sku,
+			"sku": product.Sku,
 		}
 	}
-	if strings.TrimSpace(barcode) != "" {
-		variantInput["barcode"] = barcode
+
+	if product.Barcode != "" {
+		variantInput["barcode"] = product.Barcode
 	}
 
 	variantQuery := `
-mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-	productVariantsBulkUpdate(productId: $productId, variants: $variants) {
-		productVariants { id }
-		userErrors { field message }
-	}
-}`
+	mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+		productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+			productVariants { id }
+			userErrors { field message }
+		}
+	}`
 
 	var variantData productVariantsBulkUpdateData
 	err = c.graphqlRequest(ctx, variantQuery, map[string]any{
