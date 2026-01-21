@@ -31,11 +31,10 @@ func main() {
 	logger.Log("shopifyClient")
 	syncProducts := usecases.NewSyncProducts(apixClient, shopifyClient, logger)
 	logger.Log("syncProducts")
-	if err := syncProducts.Run(context.Background()); err != nil {
-		logger.LogError("sync failed", err)
-		return
+	err := syncProducts.Run(context.Background())
+	if err != nil {
+		logger.LogError("syncProducts error", err)
 	}
-
 	logger.LogSuccess("sync completed")
 }
 

@@ -82,7 +82,7 @@ type productTranslationUpdateData struct {
 }
 
 type NewClientService interface {
-	CreateProduct(ctx context.Context, products model.Product) error
+	CreateProduct(ctx context.Context, products model.Product) (string, error)
 	UpdateProduct(ctx context.Context, product model.Product, productGid string) error
 	UpdateLocalization(ctx context.Context, product model.Product, productGid string) error
 	GetCollectionProducts(ctx context.Context) ([]model.Product, error)
@@ -111,10 +111,17 @@ func NewClient(config config.ShopifyConfig, httpClient *http.Client, logger logg
 	}
 }
 
-func (c *Client) CreateProduct(ctx context.Context, product model.Product) error {
+func (c *Client) logError(message string, err error) {
+	if c.logger == nil || err == nil {
+		return
+	}
+	c.logger.LogError(message, err)
+}
+
+func (c *Client) CreateProduct(ctx context.Context, product model.Product) (string, error) {
 
 	if product.EnglishTitle == "" {
-		return errors.New("shopify product title is required")
+		return "", errors.New("shopify product title is required")
 	}
 
 	input := map[string]any{
@@ -140,20 +147,28 @@ func (c *Client) CreateProduct(ctx context.Context, product model.Product) error
 		}, &data)
 
 	if err != nil {
-		return err
+		c.logError("shopify product create request failed", err)
+		return "", err
 	}
 
 	errGraph := userErrorsToError("productCreate", data.ProductCreate.UserErrors)
 
 	if errGraph != nil {
-		return errGraph
+		c.logError("shopify product create user errors", errGraph)
+		return "", errGraph
 	}
 
 	if data.ProductCreate.Product == nil || data.ProductCreate.Product.ID == "" {
-		return errors.New("shopify product create returned empty product id")
+		return "", errors.New("shopify product create returned empty product id")
 	}
 
-	return c.updatePrimaryVariantIdentifiers(ctx, data.ProductCreate.Product.ID, product)
+	err = c.updatePrimaryVariantIdentifiers(ctx, data.ProductCreate.Product.ID, product)
+	if err != nil {
+		c.logError("shopify product create variant update failed", err)
+		return "", err
+	}
+
+	return data.ProductCreate.Product.ID, nil
 }
 
 func (c *Client) UpdateProduct(ctx context.Context, product model.Product, productGid string) error {
@@ -189,13 +204,21 @@ func (c *Client) UpdateProduct(ctx context.Context, product model.Product, produ
 		"input": input,
 	}, &data)
 	if err != nil {
+		c.logError("shopify product update request failed", err)
 		return err
 	}
 	if err := userErrorsToError("productUpdate", data.ProductUpdate.UserErrors); err != nil {
+		c.logError("shopify product update user errors", err)
 		return err
 	}
 
-	return c.updatePrimaryVariantIdentifiers(ctx, productGid, product)
+	err = c.updatePrimaryVariantIdentifiers(ctx, productGid, product)
+	if err != nil {
+		c.logError("shopify product update variant update failed", err)
+		return err
+	}
+
+	return nil
 }
 
 func (c *Client) CheckExistProductBySku(product model.Product) (bool, string) {
@@ -228,6 +251,7 @@ func (c *Client) CheckExistProductBySku(product model.Product) (bool, string) {
 		"query": searchQuery,
 	}, &data)
 	if err != nil {
+		c.logError("shopify product variant search failed", err)
 		return false, ""
 	}
 
@@ -272,6 +296,7 @@ func (c *Client) GetCollectionProducts(ctx context.Context) ([]model.Product, er
 		var data dto.ProductsQueryData
 		err := c.graphqlRequest(ctx, query, variables, &data)
 		if err != nil {
+			c.logError("shopify products query failed", err)
 			return nil, err
 		}
 
@@ -311,14 +336,21 @@ func (c *Client) UnpublishProduct(ctx context.Context, productId string) error {
 		},
 	}, &data)
 	if err != nil {
+		c.logError("shopify unpublish request failed", err)
 		return err
 	}
-	return userErrorsToError("productUpdate", data.ProductUpdate.UserErrors)
+	if err := userErrorsToError("productUpdate", data.ProductUpdate.UserErrors); err != nil {
+		c.logError("shopify unpublish user errors", err)
+		return err
+	}
+
+	return nil
 }
 
 func (c *Client) shopifyAPIRequest(ctx context.Context, method string, endpoint string, body io.Reader) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
 	if err != nil {
+		c.logError("shopify request build failed", err)
 		return nil, err
 	}
 
@@ -332,17 +364,21 @@ func (c *Client) shopifyAPIRequest(ctx context.Context, method string, endpoint 
 	}
 	resp, err := client.Do(req)
 	if err != nil {
+		c.logError("shopify request failed", err)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
+		c.logError("shopify response read failed", err)
 		return nil, err
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("shopify request failed: %s: %s", resp.Status, strings.TrimSpace(string(respBody)))
+		err := fmt.Errorf("shopify request failed: %s: %s", resp.Status, strings.TrimSpace(string(respBody)))
+		c.logError("shopify request returned non-success status", err)
+		return nil, err
 	}
 
 	return respBody, nil
@@ -368,20 +404,25 @@ func (c *Client) graphqlRequest(ctx context.Context, query string, variables map
 	}
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
+		c.logError("shopify graphql marshal failed", err)
 		return err
 	}
 
 	raw, err := c.shopifyAPIRequest(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
+		c.logError("shopify graphql request failed", err)
 		return err
 	}
 
 	var resp dto.GraphQLResponse[json.RawMessage]
 	if err := json.Unmarshal(raw, &resp); err != nil {
+		c.logError("shopify graphql response unmarshal failed", err)
 		return err
 	}
 	if len(resp.Errors) > 0 {
-		return fmt.Errorf("shopify graphql errors: %s", formatGraphQLErrors(resp.Errors))
+		err := fmt.Errorf("shopify graphql errors: %s", formatGraphQLErrors(resp.Errors))
+		c.logError("shopify graphql response errors", err)
+		return err
 	}
 	if out == nil {
 		return nil
@@ -389,7 +430,12 @@ func (c *Client) graphqlRequest(ctx context.Context, query string, variables map
 	if len(resp.Data) == 0 {
 		return errors.New("shopify graphql response missing data")
 	}
-	return json.Unmarshal(resp.Data, out)
+	if err := json.Unmarshal(resp.Data, out); err != nil {
+		c.logError("shopify graphql data unmarshal failed", err)
+		return err
+	}
+
+	return nil
 }
 
 func (c *Client) getPrimaryVariantID(ctx context.Context, productGid string) (string, error) {
@@ -407,6 +453,7 @@ func (c *Client) getPrimaryVariantID(ctx context.Context, productGid string) (st
 		"id": productGid,
 	}, &data)
 	if err != nil {
+		c.logError("shopify variant lookup failed", err)
 		return "", err
 	}
 	if data.Product == nil || len(data.Product.Variants.Nodes) == 0 {
@@ -418,6 +465,7 @@ func (c *Client) getPrimaryVariantID(ctx context.Context, productGid string) (st
 func (c *Client) updatePrimaryVariantIdentifiers(ctx context.Context, productGid string, product model.Product) error {
 	variantID, err := c.getPrimaryVariantID(ctx, productGid)
 	if err != nil {
+		c.logError("shopify primary variant lookup failed", err)
 		return err
 	}
 	if variantID == "" {
@@ -450,9 +498,15 @@ func (c *Client) updatePrimaryVariantIdentifiers(ctx context.Context, productGid
 		"variants":  []map[string]any{variantInput},
 	}, &variantData)
 	if err != nil {
+		c.logError("shopify variant update request failed", err)
 		return err
 	}
-	return userErrorsToError("productVariantsBulkUpdate", variantData.ProductVariantsBulkUpdate.UserErrors)
+	if err := userErrorsToError("productVariantsBulkUpdate", variantData.ProductVariantsBulkUpdate.UserErrors); err != nil {
+		c.logError("shopify variant update user errors", err)
+		return err
+	}
+
+	return nil
 }
 
 func productStatus(isPublished bool) string {
@@ -534,7 +588,7 @@ func (c *Client) UpdateLocalization(ctx context.Context, product model.Product, 
 	updateLocalization := c.updateProductLocalization(ctx, translationDigest, productGid, product.HebrewTitle)
 
 	if updateLocalization != nil {
-		fmt.Printf("error %v", updateLocalization)
+		c.logError("shopify update localization failed", updateLocalization)
 	}
 
 	return nil
@@ -560,7 +614,7 @@ func (c *Client) getProductLocalizationDigest(ctx context.Context, productGid st
 	}, &result)
 
 	if err != nil {
-		fmt.Printf("error get product localization: %v\n", err)
+		c.logError("shopify get localization digest failed", err)
 		return ""
 	}
 
@@ -610,8 +664,14 @@ func (c *Client) updateProductLocalization(ctx context.Context, translationDiges
 	err := c.graphqlRequest(ctx, variantQuery, paylod, &result)
 
 	if err != nil {
+		c.logError("shopify update localization request failed", err)
 		return err
 	}
 
-	return userErrorsToError("TranslationsRegister", result.TranslationsRegister.UserErrors)
+	if err := userErrorsToError("TranslationsRegister", result.TranslationsRegister.UserErrors); err != nil {
+		c.logError("shopify update localization user errors", err)
+		return err
+	}
+
+	return nil
 }
