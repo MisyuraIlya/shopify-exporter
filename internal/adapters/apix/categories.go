@@ -11,6 +11,7 @@ import (
 	"shopify-exporter/internal/config"
 	"shopify-exporter/internal/domain/model"
 	"shopify-exporter/internal/logging"
+	"strings"
 )
 
 type CategoryService interface {
@@ -33,7 +34,7 @@ func NewCategoryClientService(config config.ApiHasvConfig, httpClient *http.Clie
 
 func (c *CleintCategoryService) CategoryList(ctx context.Context) ([]model.ProductCategories, error) {
 	reqBody := dto.CategoryRequest{
-		DbName: "EMANNUEL",
+		DbName: "EMANUEL",
 	}
 
 	bodyBytes, err := json.Marshal(reqBody)
@@ -95,13 +96,18 @@ func (c *CleintCategoryService) CategoryList(ctx context.Context) ([]model.Produ
 func mapCategory(dto dto.ProductCategoryDto) model.ProductCategories {
 	mappedCategories := make([]model.Category, 0, len(dto.Categories))
 	for _, v := range dto.Categories {
+		hebrew := strings.TrimSpace(v.CategoryHewbrew)
+		english := strings.TrimSpace(v.CategoryEnglish)
+		if hebrew == "" && english == "" {
+			continue
+		}
 		mappedCategories = append(mappedCategories, model.Category{
-			TitleHebrew:   v.CategoryHewbrew,
-			TitlteEnglish: v.CategoryEnglish,
+			TitleHebrew:   hebrew,
+			TitlteEnglish: english,
 		})
 	}
 	return model.ProductCategories{
-		SKU:        dto.Sku,
+		SKU:        strings.TrimSpace(dto.Sku),
 		Categproes: mappedCategories,
 	}
 }

@@ -20,21 +20,29 @@ func main() {
 		return
 	}
 	logger := logging.NewLogger(cfg.TelegramBot)
+	httpClient := infrahttp.NewClient(maxDuration(cfg.Shopify.Timeout, cfg.ApiHasav.Timeout))
 
 	logger.Log("Docker initialized start work..")
 
-	httpClient := infrahttp.NewClient(maxDuration(cfg.Shopify.Timeout, cfg.ApiHasav.Timeout))
-	logger.Log("httpClient")
-	apixClient := apix.NewClient(cfg.ApiHasav, httpClient)
-	logger.Log("apixClient")
-	shopifyClient := shopify.NewClient(cfg.Shopify, httpClient, logger)
-	logger.Log("shopifyClient")
-	syncProducts := usecases.NewSyncProducts(apixClient, shopifyClient, logger)
-	logger.Log("syncProducts")
-	err = syncProducts.Run(context.Background())
+	// apixClient := apix.NewClient(cfg.ApiHasav, httpClient)
+	// shopifyClient := shopify.NewClient(cfg.Shopify, httpClient, logger)
+	// syncProducts := usecases.NewSyncProducts(apixClient, shopifyClient, logger)
+	// logger.Log("syncProducts")
+	// err = syncProducts.Run(context.Background())
+	// if err != nil {
+	// 	logger.LogError("syncProducts error", err)
+	// }
+
+	apixClientCategory := apix.NewCategoryClientService(cfg.ApiHasav, httpClient, logger)
+	shopifyClientCategory := shopify.NewShopifyCategoryService(cfg.Shopify, httpClient, logger)
+	shopifyProductClient := shopify.NewClient(cfg.Shopify, httpClient, logger)
+	syncCategories := usecases.NewSyncCategories(apixClientCategory, shopifyClientCategory, shopifyProductClient, logger)
+	logger.Log("syncCategories")
+	err = syncCategories.Run(context.Background())
 	if err != nil {
-		logger.LogError("syncProducts error", err)
+		logger.LogError("syncCategories error", err)
 	}
+
 	logger.LogSuccess("sync completed")
 }
 

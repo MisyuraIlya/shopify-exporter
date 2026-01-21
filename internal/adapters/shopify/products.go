@@ -88,6 +88,7 @@ type NewClientService interface {
 	GetCollectionProducts(ctx context.Context) ([]model.Product, error)
 	UnpublishProduct(ctx context.Context, productId string) error
 	CheckExistProductBySku(product model.Product) (bool, string)
+	AttachCategoryToProduct(ctx context.Context, productCategory model.ProductCategories)
 }
 
 type Client struct {
@@ -116,6 +117,13 @@ func (c *Client) logError(message string, err error) {
 		return
 	}
 	c.logger.LogError(message, err)
+}
+
+func (c *Client) logWarning(message string) {
+	if c.logger == nil || strings.TrimSpace(message) == "" {
+		return
+	}
+	c.logger.LogWarning(message)
 }
 
 func (c *Client) CreateProduct(ctx context.Context, product model.Product) (string, error) {
@@ -261,6 +269,181 @@ func (c *Client) CheckExistProductBySku(product model.Product) (bool, string) {
 
 	gid := strings.TrimSpace(data.ProductVariants.Nodes[0].Product.ID)
 	return gid != "", gid
+}
+
+func (c *Client) AttachCategoryToProduct(ctx context.Context, productCategory model.ProductCategories) {
+	if len(productCategory.Categproes) == 0 {
+		return
+	}
+	sku := strings.TrimSpace(productCategory.SKU)
+	if sku == "" {
+		return
+	}
+
+	productID, err := c.lookupProductIDBySKU(ctx, sku)
+	if err != nil {
+		c.logError("shopify product lookup failed", err)
+		return
+	}
+	if productID == "" {
+		return
+	}
+
+	seenTitles := make(map[string]struct{}, len(productCategory.Categproes))
+	for _, category := range productCategory.Categproes {
+		title := categoryTitle(category)
+		if title == "" {
+			continue
+		}
+		key := strings.ToLower(title)
+		if _, ok := seenTitles[key]; ok {
+			continue
+		}
+		seenTitles[key] = struct{}{}
+
+		collectionID, err := c.findCollectionByTitle(ctx, title)
+		if err != nil {
+			c.logError("shopify category lookup failed", err)
+			continue
+		}
+		if collectionID == "" {
+			collectionID, err = c.createCollection(ctx, title)
+			if err != nil {
+				c.logError("shopify category create failed", err)
+				continue
+			}
+		}
+
+		if err := c.addProductToCollection(ctx, collectionID, productID); err != nil {
+			if isCollectionAddUserError(err) {
+				c.logWarning(fmt.Sprintf("shopify category attachment skipped sku=%s title=%s: %s", sku, title, err.Error()))
+			} else {
+				c.logError("shopify category attachment failed", err)
+			}
+			continue
+		}
+	}
+}
+
+func (c *Client) lookupProductIDBySKU(ctx context.Context, sku string) (string, error) {
+	sku = strings.TrimSpace(sku)
+	if sku == "" {
+		return "", errors.New("shopify product sku is required")
+	}
+
+	query := `
+	query productVariantBySku($first: Int!, $query: String!) {
+		productVariants(first: $first, query: $query) {
+			nodes {
+				product { id }
+			}
+		}
+	}`
+
+	var data productVariantSearchData
+	err := c.graphqlRequest(ctx, query, map[string]any{
+		"first": 1,
+		"query": buildSearchQuery("sku", sku),
+	}, &data)
+	if err != nil {
+		return "", err
+	}
+	if len(data.ProductVariants.Nodes) == 0 {
+		return "", nil
+	}
+	return strings.TrimSpace(data.ProductVariants.Nodes[0].Product.ID), nil
+}
+
+func (c *Client) findCollectionByTitle(ctx context.Context, title string) (string, error) {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return "", errors.New("shopify collection title is required")
+	}
+
+	query := `
+	query collections($first: Int!, $query: String!) {
+		collections(first: $first, query: $query) {
+			nodes { id title }
+		}
+	}`
+
+	var data dto.CollectionsQueryData
+	err := c.graphqlRequest(ctx, query, map[string]any{
+		"first": 1,
+		"query": buildSearchQuery("title", title),
+	}, &data)
+	if err != nil {
+		return "", err
+	}
+
+	if len(data.Collections.Nodes) == 0 {
+		return "", nil
+	}
+	return strings.TrimSpace(data.Collections.Nodes[0].ID), nil
+}
+
+func (c *Client) createCollection(ctx context.Context, title string) (string, error) {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return "", errors.New("shopify category title is required")
+	}
+
+	query := `
+	mutation collectionCreate($input: CollectionInput!) {
+		collectionCreate(input: $input) {
+			collection { id title }
+			userErrors { field message }
+		}
+	}`
+
+	var data dto.CollectionCreateData
+	err := c.graphqlRequest(ctx, query, map[string]any{
+		"input": map[string]any{
+			"title": title,
+		},
+	}, &data)
+	if err != nil {
+		return "", err
+	}
+	if err := userErrorsToError("collectionCreate", data.CollectionCreate.UserErrors); err != nil {
+		return "", err
+	}
+	if data.CollectionCreate.Collection == nil || strings.TrimSpace(data.CollectionCreate.Collection.ID) == "" {
+		return "", errors.New("shopify category create returned empty collection id")
+	}
+	return strings.TrimSpace(data.CollectionCreate.Collection.ID), nil
+}
+
+func (c *Client) addProductToCollection(ctx context.Context, collectionID string, productID string) error {
+	collectionID = strings.TrimSpace(collectionID)
+	productID = strings.TrimSpace(productID)
+	if collectionID == "" || productID == "" {
+		return errors.New("shopify collection id and product id are required")
+	}
+
+	query := `
+	mutation collectionAddProducts($id: ID!, $productIds: [ID!]!) {
+		collectionAddProducts(id: $id, productIds: $productIds) {
+			userErrors { field message }
+		}
+	}`
+
+	var data dto.CollectionAddProductsData
+	err := c.graphqlRequest(ctx, query, map[string]any{
+		"id":         collectionID,
+		"productIds": []string{productID},
+	}, &data)
+	if err != nil {
+		return err
+	}
+	return userErrorsToError("collectionAddProducts", data.CollectionAddProducts.UserErrors)
+}
+
+func isCollectionAddUserError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "collectionAddProducts failed")
 }
 
 func (c *Client) GetCollectionProducts(ctx context.Context) ([]model.Product, error) {
