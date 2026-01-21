@@ -1,3 +1,10 @@
+## script
+```
+set -a
+source .env
+set +a
+```
+
 ## excepted file structure
 
 ```

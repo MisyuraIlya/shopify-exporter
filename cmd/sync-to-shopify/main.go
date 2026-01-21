@@ -31,7 +31,7 @@ func main() {
 	logger.Log("shopifyClient")
 	syncProducts := usecases.NewSyncProducts(apixClient, shopifyClient, logger)
 	logger.Log("syncProducts")
-	err := syncProducts.Run(context.Background())
+	err = syncProducts.Run(context.Background())
 	if err != nil {
 		logger.LogError("syncProducts error", err)
 	}
