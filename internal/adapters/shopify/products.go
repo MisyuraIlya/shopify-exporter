@@ -15,6 +15,49 @@ import (
 	"time"
 )
 
+type graphQLRequest struct {
+	Query     string         `json:"query"`
+	Variables map[string]any `json:"variables,omitempty"`
+}
+
+type productUpdateData struct {
+	ProductUpdate struct {
+		Product    *dto.ShopifyProduct    `json:"product"`
+		UserErrors []dto.ShopifyUserError `json:"userErrors,omitempty"`
+	} `json:"productUpdate"`
+}
+
+type productVariantLookupData struct {
+	Product *struct {
+		Variants struct {
+			Nodes []struct {
+				ID string `json:"id"`
+			} `json:"nodes,omitempty"`
+		} `json:"variants,omitempty"`
+	} `json:"product,omitempty"`
+}
+
+type productVariantSearchData struct {
+	ProductVariants struct {
+		Nodes []struct {
+			ID      string `json:"id,omitempty"`
+			SKU     string `json:"sku,omitempty"`
+			Product struct {
+				ID string `json:"id,omitempty"`
+			} `json:"product,omitempty"`
+		} `json:"nodes,omitempty"`
+	} `json:"productVariants"`
+}
+
+type productVariantsBulkUpdateData struct {
+	ProductVariantsBulkUpdate struct {
+		ProductVariants []struct {
+			ID string `json:"id,omitempty"`
+		} `json:"productVariants,omitempty"`
+		UserErrors []dto.ShopifyUserError `json:"userErrors,omitempty"`
+	} `json:"productVariantsBulkUpdate"`
+}
+
 type NewClientService interface {
 	CreateProduct(ctx context.Context, products model.Product) error
 	UpdateProduct(ctx context.Context, product model.Product, productGid string) error
@@ -275,54 +318,19 @@ func (c *Client) shopifyAPIRequest(ctx context.Context, method string, endpoint 
 	return respBody, nil
 }
 
-type graphQLRequest struct {
-	Query     string         `json:"query"`
-	Variables map[string]any `json:"variables,omitempty"`
-}
-
-type productUpdateData struct {
-	ProductUpdate struct {
-		Product    *dto.ShopifyProduct    `json:"product"`
-		UserErrors []dto.ShopifyUserError `json:"userErrors,omitempty"`
-	} `json:"productUpdate"`
-}
-
-type productVariantLookupData struct {
-	Product *struct {
-		Variants struct {
-			Nodes []struct {
-				ID string `json:"id"`
-			} `json:"nodes,omitempty"`
-		} `json:"variants,omitempty"`
-	} `json:"product,omitempty"`
-}
-
-type productVariantSearchData struct {
-	ProductVariants struct {
-		Nodes []struct {
-			ID      string `json:"id,omitempty"`
-			SKU     string `json:"sku,omitempty"`
-			Product struct {
-				ID string `json:"id,omitempty"`
-			} `json:"product,omitempty"`
-		} `json:"nodes,omitempty"`
-	} `json:"productVariants"`
-}
-
-type productVariantsBulkUpdateData struct {
-	ProductVariantsBulkUpdate struct {
-		ProductVariants []struct {
-			ID string `json:"id,omitempty"`
-		} `json:"productVariants,omitempty"`
-		UserErrors []dto.ShopifyUserError `json:"userErrors,omitempty"`
-	} `json:"productVariantsBulkUpdate"`
-}
-
 func (c *Client) graphqlRequest(ctx context.Context, query string, variables map[string]any, out any) error {
-	endpoint, err := c.graphQLEndpoint()
-	if err != nil {
-		return err
+	domain := strings.TrimSpace(c.config.ShopDomain)
+	if domain == "" {
+		return errors.New("shopify shop domain is empty")
 	}
+	if !strings.HasPrefix(domain, "http://") && !strings.HasPrefix(domain, "https://") {
+		domain = "https://" + domain
+	}
+	domain = strings.TrimRight(domain, "/")
+	if c.config.APIVer == "" {
+		return errors.New("shopify api version is empty")
+	}
+	endpoint := domain + "/admin/api/" + c.config.APIVer + "/graphql.json"
 
 	payload := graphQLRequest{
 		Query:     strings.TrimSpace(query),
@@ -352,29 +360,6 @@ func (c *Client) graphqlRequest(ctx context.Context, query string, variables map
 		return errors.New("shopify graphql response missing data")
 	}
 	return json.Unmarshal(resp.Data, out)
-}
-
-func (c *Client) graphQLEndpoint() (string, error) {
-	base, err := c.apiBaseURL()
-	if err != nil {
-		return "", err
-	}
-	return base + "/graphql.json", nil
-}
-
-func (c *Client) apiBaseURL() (string, error) {
-	domain := strings.TrimSpace(c.config.ShopDomain)
-	if domain == "" {
-		return "", errors.New("shopify shop domain is empty")
-	}
-	if !strings.HasPrefix(domain, "http://") && !strings.HasPrefix(domain, "https://") {
-		domain = "https://" + domain
-	}
-	domain = strings.TrimRight(domain, "/")
-	if c.config.APIVer == "" {
-		return "", errors.New("shopify api version is empty")
-	}
-	return domain + "/admin/api/" + c.config.APIVer, nil
 }
 
 func (c *Client) getPrimaryVariantID(ctx context.Context, productGid string) (string, error) {
