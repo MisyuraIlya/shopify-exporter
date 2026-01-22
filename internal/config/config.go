@@ -39,4 +39,6 @@ type ApiHasvConfig struct {
 type TelegramBotConfig struct {
 	ChatId string
 	Token  string
+	// LogOutput controls logger targets: stdout, telegram, both, none.
+	LogOutput string
 }

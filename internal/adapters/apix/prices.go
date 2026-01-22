@@ -11,6 +11,7 @@ import (
 	"shopify-exporter/internal/config"
 	"shopify-exporter/internal/domain/model"
 	"shopify-exporter/internal/logging"
+	"strings"
 )
 
 type PriceService interface {
@@ -86,7 +87,21 @@ func (c *NewPriceService) PriceList(ctx context.Context) ([]model.Price, error) 
 func mapPrice(dto dto.PriceDto) model.Price {
 	return model.Price{
 		Sku:      dto.ItemKey,
-		Currency: dto.CurrencyCode,
+		Currency: normalizeCurrencyCode(dto.CurrencyCode),
 		Price:    dto.Price,
+	}
+}
+
+func normalizeCurrencyCode(code string) string {
+	value := strings.TrimSpace(code)
+	switch value {
+	case "$":
+		return "USD"
+	case "ש\"ח":
+		return "ILS"
+	case "₪":
+		return "ILS"
+	default:
+		return strings.ToUpper(value)
 	}
 }

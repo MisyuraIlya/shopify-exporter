@@ -13,6 +13,7 @@ import (
 	"shopify-exporter/internal/domain/model"
 	"shopify-exporter/internal/logging"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -95,6 +96,8 @@ type Client struct {
 	config     config.ShopifyConfig
 	httpClient *http.Client
 	logger     logging.LoggerService
+	priceMu    sync.Mutex
+	priceCache *IsraelMarketResources
 }
 
 func NewClient(config config.ShopifyConfig, httpClient *http.Client, logger logging.LoggerService) NewClientService {

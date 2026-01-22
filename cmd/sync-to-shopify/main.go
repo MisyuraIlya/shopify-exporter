@@ -43,6 +43,19 @@ func main() {
 		logger.LogError("syncCategories error", err)
 	}
 
+	priceClient, ok := shopifyClient.(shopify.PriceService)
+	if !ok {
+		logger.LogError("syncPrices error", fmt.Errorf("shopify price service unavailable"))
+	} else {
+		apixPriceClient := apix.NewPriceSerivce(cfg.ApiHasav, httpClient, logger)
+		syncPrices := usecases.NewSyncPrices(apixPriceClient, priceClient, logger)
+		logger.Log("syncPrices")
+		err = syncPrices.Run(context.Background())
+		if err != nil {
+			logger.LogError("syncPrices error", err)
+		}
+	}
+
 	logger.LogSuccess("sync completed")
 }
 

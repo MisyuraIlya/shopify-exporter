@@ -44,11 +44,40 @@ const (
 )
 
 func NewLogger(cfg config.TelegramBotConfig) LoggerService {
-	if cfg.ChatId == "" || cfg.Token == "" {
-		fmt.Println("[WARNING]: telegram credentials missing")
-		return nil
+	output := strings.ToLower(strings.TrimSpace(cfg.LogOutput))
+	if output == "" {
+		output = "stdout"
 	}
-	return &Creds{Creds: cfg}
+
+	stdout := &stdoutLogger{}
+	telegram := LoggerService(nil)
+	if cfg.ChatId == "" || cfg.Token == "" {
+		if output == "telegram" || output == "both" {
+			fmt.Println("[WARNING]: telegram credentials missing")
+		}
+	} else {
+		telegram = &Creds{Creds: cfg}
+	}
+
+	switch output {
+	case "stdout":
+		return stdout
+	case "telegram":
+		if telegram == nil {
+			return stdout
+		}
+		return telegram
+	case "both":
+		if telegram == nil {
+			return stdout
+		}
+		return &multiLogger{loggers: []LoggerService{stdout, telegram}}
+	case "none":
+		return nil
+	default:
+		fmt.Printf("[WARNING]: unknown LOG_OUTPUT=%q, defaulting to stdout\n", cfg.LogOutput)
+		return stdout
+	}
 }
 
 func (c *Creds) Log(value string) {
@@ -134,4 +163,74 @@ func (c *Creds) sendRequest(value string) error {
 	}
 
 	return fmt.Errorf("telegram send failed: too many requests")
+}
+
+type stdoutLogger struct{}
+
+func (s *stdoutLogger) Log(value string) {
+	fmt.Println(formatStdMessage("INFO", value))
+}
+
+func (s *stdoutLogger) LogError(value string, err error) {
+	msg := value
+	if err != nil {
+		if strings.TrimSpace(msg) == "" {
+			msg = err.Error()
+		} else {
+			msg = fmt.Sprintf("%s\nerror: %s", msg, err.Error())
+		}
+	}
+	fmt.Println(formatStdMessage("ERROR", msg))
+}
+
+func (s *stdoutLogger) LogWarning(value string) {
+	fmt.Println(formatStdMessage("WARNING", value))
+}
+
+func (s *stdoutLogger) LogSuccess(value string) {
+	fmt.Println(formatStdMessage("SUCCESS", value))
+}
+
+type multiLogger struct {
+	loggers []LoggerService
+}
+
+func (m *multiLogger) Log(value string) {
+	for _, logger := range m.loggers {
+		if logger != nil {
+			logger.Log(value)
+		}
+	}
+}
+
+func (m *multiLogger) LogError(value string, err error) {
+	for _, logger := range m.loggers {
+		if logger != nil {
+			logger.LogError(value, err)
+		}
+	}
+}
+
+func (m *multiLogger) LogWarning(value string) {
+	for _, logger := range m.loggers {
+		if logger != nil {
+			logger.LogWarning(value)
+		}
+	}
+}
+
+func (m *multiLogger) LogSuccess(value string) {
+	for _, logger := range m.loggers {
+		if logger != nil {
+			logger.LogSuccess(value)
+		}
+	}
+}
+
+func formatStdMessage(level, value string) string {
+	v := strings.TrimSpace(value)
+	if v == "" {
+		v = "-"
+	}
+	return fmt.Sprintf("[%s] %s", level, v)
 }
