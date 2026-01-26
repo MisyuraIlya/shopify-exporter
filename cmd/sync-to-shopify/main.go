@@ -24,37 +24,50 @@ func main() {
 
 	logger.Log("Docker initialized start work..")
 
-	apixClient := apix.NewClient(cfg.ApiHasav, httpClient)
+	// apixClient := apix.NewClient(cfg.ApiHasav, httpClient)
 	shopifyClient := shopify.NewClient(cfg.Shopify, httpClient, logger)
-	syncProducts := usecases.NewSyncProducts(apixClient, shopifyClient, logger)
-	logger.Log("syncProducts")
-	err = syncProducts.Run(context.Background())
-	if err != nil {
-		logger.LogError("syncProducts error", err)
-	}
+	// syncProducts := usecases.NewSyncProducts(apixClient, shopifyClient, logger)
+	// logger.Log("syncProducts")
+	// err = syncProducts.Run(context.Background())
+	// if err != nil {
+	// 	logger.LogError("syncProducts error", err)
+	// }
 
-	apixClientCategory := apix.NewCategoryClientService(cfg.ApiHasav, httpClient, logger)
-	shopifyClientCategory := shopify.NewShopifyCategoryService(cfg.Shopify, httpClient, logger)
-	shopifyProductClient := shopify.NewClient(cfg.Shopify, httpClient, logger)
-	syncCategories := usecases.NewSyncCategories(apixClientCategory, shopifyClientCategory, shopifyProductClient, logger)
-	logger.Log("syncCategories")
-	err = syncCategories.Run(context.Background())
-	if err != nil {
-		logger.LogError("syncCategories error", err)
-	}
+	// apixClientCategory := apix.NewCategoryClientService(cfg.ApiHasav, httpClient, logger)
+	// shopifyClientCategory := shopify.NewShopifyCategoryService(cfg.Shopify, httpClient, logger)
+	// shopifyProductClient := shopify.NewClient(cfg.Shopify, httpClient, logger)
+	// syncCategories := usecases.NewSyncCategories(apixClientCategory, shopifyClientCategory, shopifyProductClient, logger)
+	// logger.Log("syncCategories")
+	// err = syncCategories.Run(context.Background())
+	// if err != nil {
+	// 	logger.LogError("syncCategories error", err)
+	// }
 
-	priceClient, ok := shopifyClient.(shopify.PriceService)
+	attributeClient, ok := shopifyClient.(shopify.AttributeService)
 	if !ok {
-		logger.LogError("syncPrices error", fmt.Errorf("shopify price service unavailable"))
+		logger.LogError("syncAttributes error", fmt.Errorf("shopify attribute service unavailable"))
 	} else {
-		apixPriceClient := apix.NewPriceSerivce(cfg.ApiHasav, httpClient, logger)
-		syncPrices := usecases.NewSyncPrices(apixPriceClient, priceClient, logger)
-		logger.Log("syncPrices")
-		err = syncPrices.Run(context.Background())
+		apixAttributeClient := apix.NewAttributeServiceClient(cfg.ApiHasav, httpClient, logger)
+		syncAttributes := usecases.NewSyncAttributes(apixAttributeClient, attributeClient, logger)
+		logger.Log("syncAttributes")
+		err = syncAttributes.Run(context.Background())
 		if err != nil {
-			logger.LogError("syncPrices error", err)
+			logger.LogError("syncAttributes error", err)
 		}
 	}
+
+	// priceClient, ok := shopifyClient.(shopify.PriceService)
+	// if !ok {
+	// 	logger.LogError("syncPrices error", fmt.Errorf("shopify price service unavailable"))
+	// } else {
+	// 	apixPriceClient := apix.NewPriceSerivce(cfg.ApiHasav, httpClient, logger)
+	// 	syncPrices := usecases.NewSyncPrices(apixPriceClient, priceClient, logger)
+	// 	logger.Log("syncPrices")
+	// 	err = syncPrices.Run(context.Background())
+	// 	if err != nil {
+	// 		logger.LogError("syncPrices error", err)
+	// 	}
+	// }
 
 	logger.LogSuccess("sync completed")
 }

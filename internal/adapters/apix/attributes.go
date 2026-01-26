@@ -11,6 +11,7 @@ import (
 	"shopify-exporter/internal/config"
 	"shopify-exporter/internal/domain/model"
 	"shopify-exporter/internal/logging"
+	"strings"
 )
 
 type AttributeService interface {
@@ -79,8 +80,8 @@ func (c *NewAttributeService) apiResponse(ctx context.Context) (dto.AttributesRe
 	}
 
 	reqBody := map[string]any{
-		"dbName":   "EMANUEL",
-		"noteName": noteNames,
+		"dbName":    "EMANUEL",
+		"noteNames": noteNames,
 	}
 
 	jsonBody, err := json.Marshal(reqBody)
@@ -111,7 +112,11 @@ func (c *NewAttributeService) apiResponse(ctx context.Context) (dto.AttributesRe
 		return dto.AttributesResponse{}, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return dto.AttributesResponse{}, fmt.Errorf("apix products request failed: %s", resp.Status)
+		body := strings.TrimSpace(string(respBody))
+		if body != "" {
+			return dto.AttributesResponse{}, fmt.Errorf("apix attributes request failed: %s: %s", resp.Status, body)
+		}
+		return dto.AttributesResponse{}, fmt.Errorf("apix attributes request failed: %s", resp.Status)
 	}
 	var apiResp dto.AttributesResponse
 	if err := json.Unmarshal(respBody, &apiResp); err != nil {
@@ -121,16 +126,27 @@ func (c *NewAttributeService) apiResponse(ctx context.Context) (dto.AttributesRe
 }
 
 func mapAttribute(dto dto.AttributeMain) model.Attribute {
+	values := make([]model.AttributeValue, 0, len(dto.AttributesSub))
+	for _, sub := range dto.AttributesSub {
+		values = append(values, model.AttributeValue{
+			ID:          sub.NoteID,
+			HebrewName:  sub.Note,
+			EnglishName: sub.NoteEnglish,
+		})
+	}
 	return model.Attribute{
+		ID:          dto.NoteID,
 		HebrewName:  dto.NoteName,
 		EnglishName: dto.NoteNameEnglish,
+		Values:      values,
 	}
 }
 
 func mapAttributeProduct(dto dto.AttributeProduct) model.AttributeProduct {
 	return model.AttributeProduct{
-		Sku:                  dto.KeF,
-		AttributeNameHebrew:  dto.Note,
-		AttributeNameEnglish: dto.NoteEnglish,
+		Sku:          dto.KeF,
+		AttributeID:  dto.NoteID,
+		ValueHebrew:  dto.Note,
+		ValueEnglish: dto.NoteEnglish,
 	}
 }
