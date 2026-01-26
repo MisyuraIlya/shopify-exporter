@@ -11,7 +11,6 @@
 
 # Binaries (common names)
 main
-app
 bin/
 dist/
 build/
