@@ -76,6 +76,13 @@ func (c *ClientAttribute) Run(ctx context.Context) error {
 	}
 	attributeKeys := buildAttributeKeys(attributes)
 	definitions := buildMetafieldDefinitions(attributes, attributeKeys)
+	if c.logger != nil {
+		if len(definitions) == 0 {
+			c.logger.LogWarning("Attribute sync: no metafield definitions built for namespace=attributes")
+		} else {
+			c.logger.Log(fmt.Sprintf("Attribute sync: built metafield definitions count=%d", len(definitions)))
+		}
+	}
 	if len(definitions) > 0 {
 		if err := c.shopifyClient.EnsureProductMetafieldDefinitions(ctx, definitions); err != nil {
 			if c.logger != nil {

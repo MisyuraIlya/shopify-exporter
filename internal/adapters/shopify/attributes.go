@@ -192,11 +192,15 @@ func (c *Client) EnsureProductMetafieldDefinitions(ctx context.Context, definiti
 		if err != nil {
 			return err
 		}
+		if c.logger != nil {
+			c.logger.Log(fmt.Sprintf("Shopify metafield definitions namespace=%s existing=%d incoming=%d", namespace, len(existing), len(definitionMap)))
+		}
 		existingMap := make(map[string]dto.MetafieldDefinitionNode, len(existing))
 		for _, node := range existing {
 			existingMap[strings.ToLower(node.Key)] = node
 		}
 
+		createdCount := 0
 		for key, definition := range definitionMap {
 			if node, ok := existingMap[strings.ToLower(key)]; ok {
 				if shouldUpdateTranslation(definition.NameEnglish, definition.NameHebrew) {
@@ -211,11 +215,17 @@ func (c *Client) EnsureProductMetafieldDefinitions(ctx context.Context, definiti
 			if err != nil {
 				return err
 			}
-			if created != nil && shouldUpdateTranslation(definition.NameEnglish, definition.NameHebrew) {
-				if err := c.updateTranslation(ctx, created.ID, "name", definition.NameHebrew); err != nil {
-					c.logError("shopify metafield definition translation update failed", err)
+			if created != nil {
+				createdCount++
+				if shouldUpdateTranslation(definition.NameEnglish, definition.NameHebrew) {
+					if err := c.updateTranslation(ctx, created.ID, "name", definition.NameHebrew); err != nil {
+						c.logError("shopify metafield definition translation update failed", err)
+					}
 				}
 			}
+		}
+		if c.logger != nil {
+			c.logger.Log(fmt.Sprintf("Shopify metafield definitions namespace=%s created=%d", namespace, createdCount))
 		}
 	}
 
@@ -244,9 +254,11 @@ func (c *Client) listProductMetafieldDefinitions(ctx context.Context, namespace 
 		var data dto.MetafieldDefinitionsQueryData
 		variables := map[string]any{
 			"first":     metafieldQueryPageSize,
-			"after":     cursor,
 			"ownerType": metafieldOwnerProduct,
 			"namespace": namespace,
+		}
+		if cursor != "" {
+			variables["after"] = cursor
 		}
 		if err := c.graphqlRequest(ctx, query, variables, &data); err != nil {
 			return nil, err
