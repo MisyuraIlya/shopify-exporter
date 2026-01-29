@@ -21,6 +21,7 @@ func main() {
 	httpClient := infrahttp.NewClient(cfg.Shopify.Timeout)
 
 	logger.Log("wipe shopify started")
+	logger.Log(fmt.Sprintf("wipe shopify timeout=%s", cfg.Shopify.Timeout))
 
 	shopifyClient := shopify.NewClient(cfg.Shopify, httpClient, logger)
 	wipeClient, ok := shopifyClient.(shopify.WipeService)

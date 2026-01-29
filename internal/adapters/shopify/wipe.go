@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"shopify-exporter/internal/adapters/shopify/dto"
 )
@@ -15,6 +17,7 @@ type WipeService interface {
 
 const (
 	wipePageSize = 50
+	productDeleteConcurrency = 5
 )
 
 type pageInfo struct {
@@ -79,21 +82,21 @@ type metafieldDefinitionDeleteData struct {
 
 type catalogDeleteData struct {
 	CatalogDelete struct {
-		DeletedCatalogID string                 `json:"deletedCatalogId,omitempty"`
+		DeletedID string                 `json:"deletedId,omitempty"`
 		UserErrors       []dto.ShopifyUserError `json:"userErrors,omitempty"`
 	} `json:"catalogDelete"`
 }
 
 type priceListDeleteData struct {
 	PriceListDelete struct {
-		DeletedPriceListID string                 `json:"deletedPriceListId,omitempty"`
+		DeletedID string                 `json:"deletedId,omitempty"`
 		UserErrors         []dto.ShopifyUserError `json:"userErrors,omitempty"`
 	} `json:"priceListDelete"`
 }
 
 type marketDeleteData struct {
 	MarketDelete struct {
-		DeletedMarketID string                 `json:"deletedMarketId,omitempty"`
+		DeletedID  string                 `json:"deletedId,omitempty"`
 		UserErrors      []dto.ShopifyUserError `json:"userErrors,omitempty"`
 	} `json:"marketDelete"`
 }
@@ -103,27 +106,46 @@ func (c *Client) WipeAll(ctx context.Context) error {
 		return errors.New("shopify client is nil")
 	}
 
-	var firstErr error
-	recordErr := func(err error) {
-		if err == nil {
-			return
-		}
-		if firstErr == nil {
-			firstErr = err
-		}
-		c.logError("shopify wipe error", err)
+	type wipeStep struct {
+		name string
+		run  func(context.Context) error
 	}
 
-	recordErr(c.deleteAllProducts(ctx))
-	recordErr(c.deleteAllCollections(ctx))
-	recordErr(c.deleteAllMetafieldDefinitions(ctx))
-	recordErr(c.deleteAllPriceLists(ctx))
-	recordErr(c.deleteAllCatalogs(ctx))
-	recordErr(c.deleteAllMarkets(ctx))
+	steps := []wipeStep{
+		{name: "products", run: func(ctx context.Context) error { return c.deleteAllProducts(ctx) }},
+		{name: "collections", run: func(ctx context.Context) error { return c.deleteAllCollections(ctx) }},
+		{name: "metafield definitions", run: func(ctx context.Context) error { return c.deleteAllMetafieldDefinitions(ctx) }},
+		{name: "price lists", run: func(ctx context.Context) error { return c.deleteAllPriceLists(ctx) }},
+		{name: "catalogs", run: func(ctx context.Context) error { return c.deleteAllCatalogs(ctx) }},
+		{name: "markets", run: func(ctx context.Context) error { return c.deleteAllMarkets(ctx) }},
+	}
+
+	var (
+		firstErr error
+		errCh    = make(chan error, len(steps))
+	)
+
+	for _, step := range steps {
+		step := step
+		go func() {
+			c.logInfo(fmt.Sprintf("shopify wipe: deleting %s", step.name))
+			errCh <- step.run(ctx)
+		}()
+	}
+
+	for i := 0; i < len(steps); i++ {
+		if err := <-errCh; err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			c.logError("shopify wipe error", err)
+		}
+	}
 
 	if firstErr == nil {
 		c.logSuccess("shopify wipe completed")
 	}
+
 	return firstErr
 }
 
@@ -144,7 +166,7 @@ func (c *Client) deleteAllProducts(ctx context.Context) error {
 		}
 	}`
 
-	deleted := 0
+	var deleted atomic.Int64
 	after := ""
 	for {
 		var data productsQueryData
@@ -153,31 +175,77 @@ func (c *Client) deleteAllProducts(ctx context.Context) error {
 			variables["after"] = after
 		}
 		if err := c.graphqlRequest(ctx, query, variables, &data); err != nil {
+			if strings.Contains(err.Error(), "Access denied for metafieldDefinitionDelete field") {
+				c.logWarning("shopify wipe metafield definitions: access denied, skipping")
+				return nil
+			}
 			return err
 		}
-		for _, node := range data.Products.Nodes {
-			id := strings.TrimSpace(node.ID)
-			if id == "" {
-				continue
-			}
-			var resp productDeleteData
-			if err := c.graphqlRequest(ctx, deleteQuery, map[string]any{
-				"input": map[string]any{"id": id},
-			}, &resp); err != nil {
-				return err
-			}
-			if err := userErrorsToDetailedError("productDelete", resp.ProductDelete.UserErrors); err != nil {
-				return err
-			}
-			deleted++
+		pageCount := len(data.Products.Nodes)
+		if pageCount == 0 {
+			c.logInfo("shopify wipe products: no products returned")
+		} else {
+			c.logInfo(fmt.Sprintf("shopify wipe products: page size=%d deleted_total=%d", pageCount, deleted.Load()))
 		}
+
+		if pageCount > 0 {
+			ctxPage, cancel := context.WithCancel(ctx)
+			var wg sync.WaitGroup
+			sem := make(chan struct{}, productDeleteConcurrency)
+			errCh := make(chan error, 1)
+
+			for _, node := range data.Products.Nodes {
+				id := strings.TrimSpace(node.ID)
+				if id == "" {
+					continue
+				}
+				wg.Add(1)
+				sem <- struct{}{}
+				go func(productID string) {
+					defer wg.Done()
+					defer func() { <-sem }()
+					if ctxPage.Err() != nil {
+						return
+					}
+					var resp productDeleteData
+					if err := c.graphqlRequest(ctxPage, deleteQuery, map[string]any{
+						"input": map[string]any{"id": productID},
+					}, &resp); err != nil {
+						select {
+						case errCh <- err:
+							cancel()
+						default:
+						}
+						return
+					}
+					if err := userErrorsToDetailedError("productDelete", resp.ProductDelete.UserErrors); err != nil {
+						select {
+						case errCh <- err:
+							cancel()
+						default:
+						}
+						return
+					}
+					deleted.Add(1)
+				}(id)
+			}
+
+			wg.Wait()
+			cancel()
+			select {
+			case err := <-errCh:
+				return err
+			default:
+			}
+		}
+
 		if !data.Products.PageInfo.HasNextPage || strings.TrimSpace(data.Products.PageInfo.EndCursor) == "" {
 			break
 		}
 		after = data.Products.PageInfo.EndCursor
 	}
 
-	c.logSuccess(fmt.Sprintf("shopify products deleted=%d", deleted))
+	c.logSuccess(fmt.Sprintf("shopify products deleted=%d", deleted.Load()))
 	return nil
 }
 
@@ -209,6 +277,12 @@ func (c *Client) deleteAllCollections(ctx context.Context) error {
 		if err := c.graphqlRequest(ctx, query, variables, &data); err != nil {
 			return err
 		}
+		pageCount := len(data.Collections.Nodes)
+		if pageCount == 0 {
+			c.logInfo("shopify wipe collections: no collections returned")
+		} else {
+			c.logInfo(fmt.Sprintf("shopify wipe collections: page size=%d deleted_total=%d", pageCount, deleted))
+		}
 		for _, node := range data.Collections.Nodes {
 			id := strings.TrimSpace(node.ID)
 			if id == "" {
@@ -236,6 +310,7 @@ func (c *Client) deleteAllCollections(ctx context.Context) error {
 }
 
 func (c *Client) deleteAllMetafieldDefinitions(ctx context.Context) error {
+	ctx = context.WithValue(ctx, suppressGraphQLErrorsKey{}, true)
 	query := `
 	query metafieldDefinitions($first: Int!, $after: String, $ownerType: MetafieldOwnerType!) {
 		metafieldDefinitions(first: $first, after: $after, ownerType: $ownerType) {
@@ -266,6 +341,12 @@ func (c *Client) deleteAllMetafieldDefinitions(ctx context.Context) error {
 		if err := c.graphqlRequest(ctx, query, variables, &data); err != nil {
 			return err
 		}
+		pageCount := len(data.MetafieldDefinitions.Nodes)
+		if pageCount == 0 {
+			c.logInfo("shopify wipe metafield definitions: no definitions returned")
+		} else {
+			c.logInfo(fmt.Sprintf("shopify wipe metafield definitions: page size=%d deleted_total=%d", pageCount, deleted))
+		}
 		for _, node := range data.MetafieldDefinitions.Nodes {
 			id := strings.TrimSpace(node.ID)
 			if id == "" {
@@ -276,6 +357,10 @@ func (c *Client) deleteAllMetafieldDefinitions(ctx context.Context) error {
 				"id":                            id,
 				"deleteAllAssociatedMetafields": true,
 			}, &resp); err != nil {
+				if strings.Contains(err.Error(), "Access denied for metafieldDefinitionDelete field") {
+					c.logWarning("shopify wipe metafield definitions: access denied, skipping")
+					return nil
+				}
 				return err
 			}
 			if err := userErrorsToDetailedError("metafieldDefinitionDelete", resp.MetafieldDefinitionDelete.UserErrors); err != nil {
@@ -305,7 +390,7 @@ func (c *Client) deleteAllCatalogs(ctx context.Context) error {
 	deleteQuery := `
 	mutation catalogDelete($id: ID!) {
 		catalogDelete(id: $id) {
-			deletedCatalogId
+			deletedId
 			userErrors { field message }
 		}
 	}`
@@ -321,6 +406,12 @@ func (c *Client) deleteAllCatalogs(ctx context.Context) error {
 		if err := c.graphqlRequest(ctx, query, variables, &data); err != nil {
 			return err
 		}
+		pageCount := len(data.Catalogs.Nodes)
+		if pageCount == 0 {
+			c.logInfo("shopify wipe catalogs: no catalogs returned")
+		} else {
+			c.logInfo(fmt.Sprintf("shopify wipe catalogs: page size=%d deleted_total=%d", pageCount, deleted))
+		}
 		for _, node := range data.Catalogs.Nodes {
 			id := strings.TrimSpace(node.ID)
 			if id == "" {
@@ -333,6 +424,10 @@ func (c *Client) deleteAllCatalogs(ctx context.Context) error {
 				return err
 			}
 			if err := userErrorsToDetailedError("catalogDelete", resp.CatalogDelete.UserErrors); err != nil {
+				if strings.Contains(err.Error(), "Cannot delete a catalog for an app") {
+					c.logWarning(fmt.Sprintf("shopify wipe catalogs: skipping app catalog id=%s", id))
+					continue
+				}
 				return err
 			}
 			deleted++
@@ -359,7 +454,7 @@ func (c *Client) deleteAllPriceLists(ctx context.Context) error {
 	deleteQuery := `
 	mutation priceListDelete($id: ID!) {
 		priceListDelete(id: $id) {
-			deletedPriceListId
+			deletedId
 			userErrors { field message }
 		}
 	}`
@@ -374,6 +469,12 @@ func (c *Client) deleteAllPriceLists(ctx context.Context) error {
 		}
 		if err := c.graphqlRequest(ctx, query, variables, &data); err != nil {
 			return err
+		}
+		pageCount := len(data.PriceLists.Nodes)
+		if pageCount == 0 {
+			c.logInfo("shopify wipe price lists: no price lists returned")
+		} else {
+			c.logInfo(fmt.Sprintf("shopify wipe price lists: page size=%d deleted_total=%d", pageCount, deleted))
 		}
 		for _, node := range data.PriceLists.Nodes {
 			id := strings.TrimSpace(node.ID)
@@ -410,13 +511,16 @@ func (c *Client) deleteAllMarkets(ctx context.Context) error {
 	deleteQuery := `
 	mutation marketDelete($id: ID!) {
 		marketDelete(id: $id) {
-			deletedMarketId
+			deletedId
 			userErrors { field message }
 		}
 	}`
 
 	deleted := 0
 	for _, market := range markets {
+		if deleted == 0 {
+			c.logInfo(fmt.Sprintf("shopify wipe markets: total=%d", len(markets)))
+		}
 		id := strings.TrimSpace(market.ID)
 		if id == "" {
 			continue
@@ -428,6 +532,10 @@ func (c *Client) deleteAllMarkets(ctx context.Context) error {
 			return err
 		}
 		if err := userErrorsToDetailedError("marketDelete", resp.MarketDelete.UserErrors); err != nil {
+			if strings.Contains(err.Error(), "last region market") {
+				c.logWarning(fmt.Sprintf("shopify wipe markets: skipping last region market id=%s", id))
+				continue
+			}
 			return err
 		}
 		deleted++
@@ -435,4 +543,11 @@ func (c *Client) deleteAllMarkets(ctx context.Context) error {
 
 	c.logSuccess(fmt.Sprintf("shopify markets deleted=%d", deleted))
 	return nil
+}
+
+func (c *Client) logInfo(message string) {
+	if c == nil || c.logger == nil || strings.TrimSpace(message) == "" {
+		return
+	}
+	c.logger.Log(message)
 }

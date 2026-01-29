@@ -536,9 +536,12 @@ func (c *Client) UnpublishProduct(ctx context.Context, productId string) error {
 }
 
 func (c *Client) shopifyAPIRequest(ctx context.Context, method string, endpoint string, body io.Reader) ([]byte, error) {
+	suppressLogs := suppressGraphQLErrors(ctx)
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
 	if err != nil {
-		c.logError("shopify request build failed", err)
+		if !suppressLogs {
+			c.logError("shopify request build failed", err)
+		}
 		return nil, err
 	}
 
@@ -552,20 +555,26 @@ func (c *Client) shopifyAPIRequest(ctx context.Context, method string, endpoint 
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		c.logError("shopify request failed", err)
+		if !suppressLogs {
+			c.logError("shopify request failed", err)
+		}
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		c.logError("shopify response read failed", err)
+		if !suppressLogs {
+			c.logError("shopify response read failed", err)
+		}
 		return nil, err
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		err := newHTTPStatusError(resp.StatusCode, resp.Status, respBody)
-		c.logError("shopify request returned non-success status", err)
+		if !suppressLogs {
+			c.logError("shopify request returned non-success status", err)
+		}
 		return nil, err
 	}
 
@@ -573,6 +582,7 @@ func (c *Client) shopifyAPIRequest(ctx context.Context, method string, endpoint 
 }
 
 func (c *Client) graphqlRequest(ctx context.Context, query string, variables map[string]any, out any) error {
+	suppressLogs := suppressGraphQLErrors(ctx)
 	domain := strings.TrimSpace(c.config.ShopDomain)
 	if domain == "" {
 		return errors.New("shopify shop domain is empty")
@@ -592,7 +602,9 @@ func (c *Client) graphqlRequest(ctx context.Context, query string, variables map
 	}
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
-		c.logError("shopify graphql marshal failed", err)
+		if !suppressLogs {
+			c.logError("shopify graphql marshal failed", err)
+		}
 		return err
 	}
 
@@ -605,13 +617,17 @@ func (c *Client) graphqlRequest(ctx context.Context, query string, variables map
 				}
 				continue
 			}
-			c.logError("shopify graphql request failed", err)
+			if !suppressLogs {
+				c.logError("shopify graphql request failed", err)
+			}
 			return err
 		}
 
 		var resp dto.GraphQLResponse[json.RawMessage]
 		if err := json.Unmarshal(raw, &resp); err != nil {
-			c.logError("shopify graphql response unmarshal failed", err)
+			if !suppressLogs {
+				c.logError("shopify graphql response unmarshal failed", err)
+			}
 			return err
 		}
 		if len(resp.Errors) > 0 {
@@ -622,7 +638,9 @@ func (c *Client) graphqlRequest(ctx context.Context, query string, variables map
 				continue
 			}
 			err := fmt.Errorf("shopify graphql errors: %s", formatGraphQLErrors(resp.Errors))
-			c.logError("shopify graphql response errors", err)
+			if !suppressLogs {
+				c.logError("shopify graphql response errors", err)
+			}
 			return err
 		}
 		if out == nil {
@@ -632,7 +650,9 @@ func (c *Client) graphqlRequest(ctx context.Context, query string, variables map
 			return errors.New("shopify graphql response missing data")
 		}
 		if err := json.Unmarshal(resp.Data, out); err != nil {
-			c.logError("shopify graphql data unmarshal failed", err)
+			if !suppressLogs {
+				c.logError("shopify graphql data unmarshal failed", err)
+			}
 			return err
 		}
 
@@ -640,6 +660,16 @@ func (c *Client) graphqlRequest(ctx context.Context, query string, variables map
 	}
 
 	return errors.New("shopify graphql request retries exhausted")
+}
+
+type suppressGraphQLErrorsKey struct{}
+
+func suppressGraphQLErrors(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	value, ok := ctx.Value(suppressGraphQLErrorsKey{}).(bool)
+	return ok && value
 }
 
 func (c *Client) getPrimaryVariantID(ctx context.Context, productGid string) (string, error) {
