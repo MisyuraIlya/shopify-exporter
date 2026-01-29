@@ -1,8 +1,8 @@
 package dto
 
 type Stock struct {
-	ItemKey     string `json:"ITEMKEY"`
-	ItemWarHBal int    `json:"ITEMWARHBAL"`
+	ItemKey     string  `json:"ITEMKEY"`
+	ItemWarHBal float64 `json:"ITEMWARHBAL"`
 }
 
 type StockResponse struct {

@@ -98,6 +98,8 @@ type Client struct {
 	logger     logging.LoggerService
 	priceMu    sync.Mutex
 	priceCache *IsraelMarketResources
+	locationMu sync.Mutex
+	locationID string
 }
 
 func NewClient(config config.ShopifyConfig, httpClient *http.Client, logger logging.LoggerService) NewClientService {

@@ -43,18 +43,18 @@ func main() {
 	// 	logger.LogError("syncCategories error", err)
 	// }
 
-	attributeClient, ok := shopifyClient.(shopify.AttributeService)
-	if !ok {
-		logger.LogError("syncAttributes error", fmt.Errorf("shopify attribute service unavailable"))
-	} else {
-		apixAttributeClient := apix.NewAttributeServiceClient(cfg.ApiHasav, httpClient, logger)
-		syncAttributes := usecases.NewSyncAttributes(apixAttributeClient, attributeClient, logger)
-		logger.Log("syncAttributes")
-		err = syncAttributes.Run(context.Background())
-		if err != nil {
-			logger.LogError("syncAttributes error", err)
-		}
-	}
+	// attributeClient, ok := shopifyClient.(shopify.AttributeService)
+	// if !ok {
+	// 	logger.LogError("syncAttributes error", fmt.Errorf("shopify attribute service unavailable"))
+	// } else {
+	// 	apixAttributeClient := apix.NewAttributeServiceClient(cfg.ApiHasav, httpClient, logger)
+	// 	syncAttributes := usecases.NewSyncAttributes(apixAttributeClient, attributeClient, logger)
+	// 	logger.Log("syncAttributes")
+	// 	err = syncAttributes.Run(context.Background())
+	// 	if err != nil {
+	// 		logger.LogError("syncAttributes error", err)
+	// 	}
+	// }
 
 	// priceClient, ok := shopifyClient.(shopify.PriceService)
 	// if !ok {
@@ -68,6 +68,19 @@ func main() {
 	// 		logger.LogError("syncPrices error", err)
 	// 	}
 	// }
+
+	stockClient, ok := shopifyClient.(shopify.StockService)
+	if !ok {
+		logger.LogError("syncStocks error", fmt.Errorf("shopify stock service unavailable"))
+	} else {
+		apixStockClient := apix.NewStockService(cfg.ApiHasav, httpClient, logger)
+		syncStocks := usecases.NewSyncStocks(apixStockClient, stockClient, logger)
+		logger.Log("syncStocks")
+		err = syncStocks.Run(context.Background())
+		if err != nil {
+			logger.LogError("syncStocks error", err)
+		}
+	}
 
 	logger.LogSuccess("sync completed")
 }

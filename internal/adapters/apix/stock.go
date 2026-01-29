@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"shopify-exporter/internal/adapters/apix/dto"
 	"shopify-exporter/internal/config"
@@ -77,8 +78,12 @@ func (c *NewStockS) FetchStocks(ctx context.Context) ([]model.Stock, error) {
 }
 
 func dtoMap(dto dto.Stock) model.Stock {
+	quantity := int32(0)
+	if !math.IsNaN(dto.ItemWarHBal) && !math.IsInf(dto.ItemWarHBal, 0) {
+		quantity = int32(math.Round(dto.ItemWarHBal))
+	}
 	return model.Stock{
 		Sku:   dto.ItemKey,
-		Stock: int32(dto.ItemWarHBal),
+		Stock: quantity,
 	}
 }
