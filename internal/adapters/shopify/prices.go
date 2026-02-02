@@ -22,6 +22,7 @@ const (
 	marketRegionIL         = "IL"
 	maxFixedPriceBatchSize = 250
 	maxVariantsBatchSize   = 250
+	maxVariantsPageSize    = 250
 )
 
 type PriceService interface {
@@ -98,6 +99,24 @@ func isVariantNotFoundError(err error) (*variantNotFoundError, bool) {
 	return nil, false
 }
 
+type productVariantListData struct {
+	ProductVariants struct {
+		Nodes []struct {
+			ID      string `json:"id,omitempty"`
+			SKU     string `json:"sku,omitempty"`
+			Product struct {
+				ID string `json:"id,omitempty"`
+			} `json:"product,omitempty"`
+		} `json:"nodes,omitempty"`
+		PageInfo dto.ShopifyPageInfo `json:"pageInfo,omitempty"`
+	} `json:"productVariants"`
+}
+
+type variantLookup struct {
+	VariantID string
+	ProductID string
+}
+
 func (c *Client) EnsureIsraelMarketAndCatalog(ctx context.Context) (IsraelMarketResources, error) {
 	if c == nil {
 		return IsraelMarketResources{}, errors.New("shopify client is nil")
@@ -128,10 +147,27 @@ func (c *Client) UpsertPricesBatch(ctx context.Context, inputs []PriceUpsertInpu
 	}
 
 	skippedMissing := 0
+	skuLookup, err := c.buildVariantLookup(ctx, inputs)
+	if err != nil {
+		return err
+	}
 	resolved := make([]resolvedPriceInput, 0, len(inputs))
 	for _, input := range inputs {
 		if err := validatePriceInput(input); err != nil {
 			return err
+		}
+		if input.VariantID == "" && strings.TrimSpace(input.SKU) != "" && len(skuLookup) > 0 {
+			sku := strings.TrimSpace(input.SKU)
+			if lookup, ok := skuLookup[sku]; ok {
+				input.VariantID = lookup.VariantID
+				if input.ProductID == "" {
+					input.ProductID = lookup.ProductID
+				}
+			} else {
+				skippedMissing++
+				c.logWarning((&variantNotFoundError{SKU: sku}).Error())
+				continue
+			}
 		}
 		item, err := c.resolvePriceInput(ctx, input)
 		if err != nil {
@@ -830,6 +866,71 @@ func (c *Client) findVariantBySKU(ctx context.Context, sku string) (string, stri
 	}
 	variant := data.ProductVariants.Nodes[0]
 	return strings.TrimSpace(variant.ID), strings.TrimSpace(variant.Product.ID), nil
+}
+
+func (c *Client) buildVariantLookup(ctx context.Context, inputs []PriceUpsertInput) (map[string]variantLookup, error) {
+	needsSKU := false
+	for _, input := range inputs {
+		if input.VariantID == "" && strings.TrimSpace(input.SKU) != "" {
+			needsSKU = true
+			break
+		}
+	}
+	if !needsSKU {
+		return nil, nil
+	}
+
+	lookup := make(map[string]variantLookup)
+	after := ""
+	query := `
+	query productVariants($first: Int!, $after: String) {
+		productVariants(first: $first, after: $after) {
+			nodes {
+				id
+				sku
+				product { id }
+			}
+			pageInfo { hasNextPage endCursor }
+		}
+	}`
+
+	for {
+		var data productVariantListData
+		vars := map[string]any{
+			"first": maxVariantsPageSize,
+		}
+		if after != "" {
+			vars["after"] = after
+		}
+		if err := c.graphqlRequest(ctx, query, vars, &data); err != nil {
+			return nil, err
+		}
+		for _, node := range data.ProductVariants.Nodes {
+			sku := strings.TrimSpace(node.SKU)
+			if sku == "" {
+				continue
+			}
+			if _, exists := lookup[sku]; exists {
+				continue
+			}
+			lookup[sku] = variantLookup{
+				VariantID: strings.TrimSpace(node.ID),
+				ProductID: strings.TrimSpace(node.Product.ID),
+			}
+		}
+		if !data.ProductVariants.PageInfo.HasNextPage {
+			break
+		}
+		after = strings.TrimSpace(data.ProductVariants.PageInfo.EndCursor)
+		if after == "" {
+			break
+		}
+	}
+
+	if len(lookup) > 0 {
+		c.logSuccess(fmt.Sprintf("shopify variants loaded skus=%d", len(lookup)))
+	}
+	return lookup, nil
 }
 
 func (c *Client) getProductIDForVariant(ctx context.Context, variantID string) (string, error) {
