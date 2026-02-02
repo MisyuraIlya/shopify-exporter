@@ -385,15 +385,14 @@ func (c *Client) createIsraelMarket(ctx context.Context) (marketInfo, error) {
 
 func (c *Client) updateMarketCurrencySettings(ctx context.Context, marketID string) error {
 	query := `
-	mutation marketUpdate($input: MarketUpdateInput!) {
-		marketUpdate(input: $input) {
+	mutation marketUpdate($id: ID!, $input: MarketUpdateInput!) {
+		marketUpdate(id: $id, input: $input) {
 			market { id }
 			userErrors { field message }
 		}
 	}`
 
 	input := map[string]any{
-		"id": marketID,
 		"currencySettings": map[string]any{
 			"baseCurrency":    currencyILS,
 			"localCurrencies": false,
@@ -401,7 +400,10 @@ func (c *Client) updateMarketCurrencySettings(ctx context.Context, marketID stri
 	}
 
 	var data dto.MarketUpdateData
-	if err := c.graphqlRequest(ctx, query, map[string]any{"input": input}, &data); err != nil {
+	if err := c.graphqlRequest(ctx, query, map[string]any{
+		"id":    marketID,
+		"input": input,
+	}, &data); err != nil {
 		return err
 	}
 	return userErrorsToDetailedError("marketUpdate", data.MarketUpdate.UserErrors)
@@ -445,7 +447,7 @@ func (c *Client) createCatalog(ctx context.Context, title string, marketID strin
 	}
 
 	query := `
-	mutation catalogCreate($input: CatalogInput!) {
+	mutation catalogCreate($input: CatalogCreateInput!) {
 		catalogCreate(input: $input) {
 			catalog { id title status }
 			userErrors { field message }
@@ -531,20 +533,22 @@ func (c *Client) addCatalogToMarket(ctx context.Context, marketID, catalogID str
 	}
 
 	query := `
-	mutation marketUpdate($input: MarketUpdateInput!) {
-		marketUpdate(input: $input) {
+	mutation marketUpdate($id: ID!, $input: MarketUpdateInput!) {
+		marketUpdate(id: $id, input: $input) {
 			market { id }
 			userErrors { field message }
 		}
 	}`
 
 	input := map[string]any{
-		"id":            marketID,
 		"catalogsToAdd": []string{catalogID},
 	}
 
 	var data dto.MarketUpdateData
-	if err := c.graphqlRequest(ctx, query, map[string]any{"input": input}, &data); err != nil {
+	if err := c.graphqlRequest(ctx, query, map[string]any{
+		"id":    marketID,
+		"input": input,
+	}, &data); err != nil {
 		return err
 	}
 	return userErrorsToDetailedError("marketUpdate", data.MarketUpdate.UserErrors)
@@ -616,7 +620,7 @@ func (c *Client) ensureCatalogPublicationAndPriceList(ctx context.Context, catal
 
 func (c *Client) createCatalogPublication(ctx context.Context, catalogID string) (dto.PublicationNode, error) {
 	query := `
-	mutation publicationCreate($input: PublicationInput!) {
+	mutation publicationCreate($input: PublicationCreateInput!) {
 		publicationCreate(input: $input) {
 			publication { id autoPublish }
 			userErrors { field message }
@@ -673,7 +677,7 @@ func (c *Client) updatePublicationAutoPublish(ctx context.Context, publicationID
 
 func (c *Client) createPriceList(ctx context.Context, catalogID string) (dto.PriceListNode, error) {
 	query := `
-	mutation priceListCreate($input: PriceListInput!) {
+	mutation priceListCreate($input: PriceListCreateInput!) {
 		priceListCreate(input: $input) {
 			priceList { id name currency }
 			userErrors { field message }
@@ -894,6 +898,12 @@ func (c *Client) updateBaseUSDPrices(ctx context.Context, inputs []resolvedPrice
 			if err := userErrorsToDetailedError("productVariantsBulkUpdate", data.ProductVariantsBulkUpdate.UserErrors); err != nil {
 				return err
 			}
+			for _, item := range batch {
+				if item.SKU == "" {
+					continue
+				}
+				c.logSuccess(fmt.Sprintf("shopify price updated sku=%s usd=%s", item.SKU, formatMoneyAmount(item.USDPrice)))
+			}
 		}
 	}
 
@@ -942,6 +952,12 @@ func (c *Client) addFixedILSPrices(ctx context.Context, priceListID string, inpu
 		}
 		if err := userErrorsToDetailedError("priceListFixedPricesAdd", data.PriceListFixedPricesAdd.UserErrors); err != nil {
 			return err
+		}
+		for _, item := range batch {
+			if item.SKU == "" {
+				continue
+			}
+			c.logSuccess(fmt.Sprintf("shopify price updated sku=%s ils=%s", item.SKU, formatMoneyAmount(item.ILSPrice)))
 		}
 	}
 

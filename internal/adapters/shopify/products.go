@@ -82,6 +82,23 @@ type productTranslationUpdateData struct {
 	} `json:"translationsRegister"`
 }
 
+type publicationsQueryData struct {
+	Publications struct {
+		Edges []struct {
+			Node struct {
+				ID string `json:"id,omitempty"`
+			} `json:"node,omitempty"`
+		} `json:"edges,omitempty"`
+		PageInfo dto.ShopifyPageInfo `json:"pageInfo,omitempty"`
+	} `json:"publications"`
+}
+
+type publishablePublishData struct {
+	PublishablePublish struct {
+		UserErrors []dto.ShopifyUserError `json:"userErrors,omitempty"`
+	} `json:"publishablePublish"`
+}
+
 type NewClientService interface {
 	CreateProduct(ctx context.Context, products model.Product) (string, error)
 	UpdateProduct(ctx context.Context, product model.Product, productGid string) error
@@ -101,6 +118,8 @@ type Client struct {
 	locationMu sync.Mutex
 	locationID string
 }
+
+const maxPublicationBatchSize = 50
 
 func NewClient(config config.ShopifyConfig, httpClient *http.Client, logger logging.LoggerService) NewClientService {
 	if httpClient == nil {
@@ -181,6 +200,13 @@ func (c *Client) CreateProduct(ctx context.Context, product model.Product) (stri
 		return "", err
 	}
 
+	if product.IsPublished {
+		if err := c.publishProduct(ctx, data.ProductCreate.Product.ID); err != nil {
+			c.logError("shopify product publish failed", err)
+			return "", err
+		}
+	}
+
 	return data.ProductCreate.Product.ID, nil
 }
 
@@ -229,6 +255,13 @@ func (c *Client) UpdateProduct(ctx context.Context, product model.Product, produ
 	if err != nil {
 		c.logError("shopify product update variant update failed", err)
 		return err
+	}
+
+	if product.IsPublished {
+		if err := c.publishProduct(ctx, productGid); err != nil {
+			c.logError("shopify product publish failed", err)
+			return err
+		}
 	}
 
 	return nil
@@ -738,6 +771,95 @@ func (c *Client) updatePrimaryVariantIdentifiers(ctx context.Context, productGid
 	if err := userErrorsToError("productVariantsBulkUpdate", variantData.ProductVariantsBulkUpdate.UserErrors); err != nil {
 		c.logError("shopify variant update user errors", err)
 		return err
+	}
+
+	return nil
+}
+
+func (c *Client) listPublicationIDs(ctx context.Context) ([]string, error) {
+	query := `
+	query publications($first: Int!, $after: String) {
+		publications(first: $first, after: $after) {
+			edges {
+				node { id }
+			}
+			pageInfo { hasNextPage endCursor }
+		}
+	}`
+
+	ids := make([]string, 0)
+	after := ""
+	for {
+		vars := map[string]any{
+			"first": 50,
+		}
+		if after != "" {
+			vars["after"] = after
+		}
+		var data publicationsQueryData
+		if err := c.graphqlRequest(ctx, query, vars, &data); err != nil {
+			return nil, err
+		}
+		for _, edge := range data.Publications.Edges {
+			if id := strings.TrimSpace(edge.Node.ID); id != "" {
+				ids = append(ids, id)
+			}
+		}
+		if !data.Publications.PageInfo.HasNextPage {
+			break
+		}
+		after = strings.TrimSpace(data.Publications.PageInfo.EndCursor)
+		if after == "" {
+			break
+		}
+	}
+
+	return ids, nil
+}
+
+func (c *Client) publishProduct(ctx context.Context, productID string) error {
+	productID = strings.TrimSpace(productID)
+	if productID == "" {
+		return errors.New("shopify product id is required")
+	}
+
+	publicationIDs, err := c.listPublicationIDs(ctx)
+	if err != nil {
+		return err
+	}
+	if len(publicationIDs) == 0 {
+		return errors.New("shopify publications not found")
+	}
+
+	query := `
+	mutation publishablePublish($id: ID!, $input: [PublicationInput!]!) {
+		publishablePublish(id: $id, input: $input) {
+			userErrors { field message }
+		}
+	}`
+
+	for start := 0; start < len(publicationIDs); start += maxPublicationBatchSize {
+		end := start + maxPublicationBatchSize
+		if end > len(publicationIDs) {
+			end = len(publicationIDs)
+		}
+		batch := publicationIDs[start:end]
+		input := make([]map[string]any, 0, len(batch))
+		for _, publicationID := range batch {
+			input = append(input, map[string]any{
+				"publicationId": publicationID,
+			})
+		}
+		var data publishablePublishData
+		if err := c.graphqlRequest(ctx, query, map[string]any{
+			"id":    productID,
+			"input": input,
+		}, &data); err != nil {
+			return err
+		}
+		if err := userErrorsToError("publishablePublish", data.PublishablePublish.UserErrors); err != nil {
+			return err
+		}
 	}
 
 	return nil
