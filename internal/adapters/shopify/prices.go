@@ -500,6 +500,14 @@ func (c *Client) listMarkets(ctx context.Context) ([]dto.MarketNode, error) {
 }
 
 func (c *Client) findIsraelMarket(ctx context.Context) (marketInfo, error) {
+	preferred, err := c.findMarketByHandleOrName(ctx, israelMarketHandle, israelMarketName)
+	if err != nil {
+		return marketInfo{}, err
+	}
+	if preferred.ID != "" {
+		return preferred, nil
+	}
+
 	markets, err := c.listMarkets(ctx)
 	if err != nil {
 		return marketInfo{}, err
