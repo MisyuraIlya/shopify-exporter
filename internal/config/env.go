@@ -68,11 +68,22 @@ func LoadForDailySync() (*DailyConfig, error) {
 		return nil, err
 	}
 
+	shopifyBaseCurrency := stringWithDefault("SHOPIFY_BASE_CURRENCY", "")
+	shopifyIntlMarketHandle := stringWithDefault("SHOPIFY_INTERNATIONAL_MARKET_HANDLE", "")
+	shopifyIntlMarketName := stringWithDefault("SHOPIFY_INTERNATIONAL_MARKET_NAME", "")
+	shopifyIntlCatalogTitle := stringWithDefault("SHOPIFY_INTERNATIONAL_CATALOG_TITLE", "")
+	shopifyIntlPriceListName := stringWithDefault("SHOPIFY_INTERNATIONAL_PRICE_LIST_NAME", "")
+
 	cfgShopify := ShopifyConfig{
-		ShopDomain: shopifyBaseUrl,
-		Token:      shopifyToken,
-		Timeout:    shopifyDuration,
-		APIVer:     shopifyVersion,
+		ShopDomain:                 shopifyBaseUrl,
+		Token:                      shopifyToken,
+		Timeout:                    shopifyDuration,
+		APIVer:                     shopifyVersion,
+		BaseCurrency:               shopifyBaseCurrency,
+		InternationalMarketHandle:  shopifyIntlMarketHandle,
+		InternationalMarketName:    shopifyIntlMarketName,
+		InternationalCatalogTitle:  shopifyIntlCatalogTitle,
+		InternationalPriceListName: shopifyIntlPriceListName,
 	}
 
 	hasavBaseUrl, err := requriedString("API_BASE_URL")
@@ -124,10 +135,21 @@ func LoadForSyncOrder() (*OrdersConfig, error) {
 		return nil, err
 	}
 
+	shopifyBaseCurrency := stringWithDefault("SHOPIFY_BASE_CURRENCY", "")
+	shopifyIntlMarketHandle := stringWithDefault("SHOPIFY_INTERNATIONAL_MARKET_HANDLE", "")
+	shopifyIntlMarketName := stringWithDefault("SHOPIFY_INTERNATIONAL_MARKET_NAME", "")
+	shopifyIntlCatalogTitle := stringWithDefault("SHOPIFY_INTERNATIONAL_CATALOG_TITLE", "")
+	shopifyIntlPriceListName := stringWithDefault("SHOPIFY_INTERNATIONAL_PRICE_LIST_NAME", "")
+
 	cfgShopify := ShopifyConfig{
-		ShopDomain: shopifyBaseUrl,
-		Token:      shopifyToken,
-		Timeout:    shopifyDuration,
+		ShopDomain:                 shopifyBaseUrl,
+		Token:                      shopifyToken,
+		Timeout:                    shopifyDuration,
+		BaseCurrency:               shopifyBaseCurrency,
+		InternationalMarketHandle:  shopifyIntlMarketHandle,
+		InternationalMarketName:    shopifyIntlMarketName,
+		InternationalCatalogTitle:  shopifyIntlCatalogTitle,
+		InternationalPriceListName: shopifyIntlPriceListName,
 	}
 
 	hasavBaseUrl, err := requriedString("API_BASE_URL")

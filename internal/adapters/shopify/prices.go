@@ -19,6 +19,11 @@ const (
 	israelCatalogTitle = "Israel Catalog"
 	israelPriceList    = "Israel ILS"
 
+	defaultInternationalMarketHandle  = "international"
+	defaultInternationalMarketName    = "International"
+	defaultInternationalCatalogTitle  = "International Catalog"
+	defaultInternationalPriceListName = "International USD"
+
 	marketRegionIL         = "IL"
 	maxFixedPriceBatchSize = 250
 	maxVariantsBatchSize   = 250
@@ -188,15 +193,93 @@ func (c *Client) UpsertPricesBatch(ctx context.Context, inputs []PriceUpsertInpu
 		return nil
 	}
 
-	if err := c.updateBaseUSDPrices(ctx, resolved); err != nil {
+	baseCurrency := c.baseCurrencyCode()
+	if err := validateSupportedCurrency(baseCurrency); err != nil {
 		return err
 	}
-	if err := c.addFixedILSPrices(ctx, resources.PriceListID, resolved); err != nil {
+	if err := c.updateBasePrices(ctx, resolved, baseCurrency); err != nil {
 		return err
+	}
+	if err := c.addFixedPrices(ctx, resources.PriceListID, resolved, currencyILS); err != nil {
+		return err
+	}
+
+	if baseCurrency == currencyILS {
+		internationalResources, err := c.ensureInternationalMarketAndCatalog(ctx)
+		if err != nil {
+			return err
+		}
+		if err := c.addFixedPrices(ctx, internationalResources.PriceListID, resolved, currencyUSD); err != nil {
+			return err
+		}
 	}
 
 	c.logSuccess(fmt.Sprintf("shopify prices updated variants=%d skipped_missing=%d", len(resolved), skippedMissing))
 	return nil
+}
+
+func validateSupportedCurrency(code string) error {
+	switch strings.ToUpper(strings.TrimSpace(code)) {
+	case currencyUSD, currencyILS:
+		return nil
+	default:
+		return fmt.Errorf("shopify unsupported base currency %q (expected %s or %s)", code, currencyUSD, currencyILS)
+	}
+}
+
+func (c *Client) baseCurrencyCode() string {
+	if c == nil {
+		return currencyUSD
+	}
+	code := strings.TrimSpace(c.config.BaseCurrency)
+	if code == "" {
+		return currencyUSD
+	}
+	return strings.ToUpper(code)
+}
+
+func (c *Client) internationalMarketHandle() string {
+	if c == nil {
+		return defaultInternationalMarketHandle
+	}
+	handle := strings.TrimSpace(c.config.InternationalMarketHandle)
+	if handle == "" {
+		return defaultInternationalMarketHandle
+	}
+	return handle
+}
+
+func (c *Client) internationalMarketName() string {
+	if c == nil {
+		return defaultInternationalMarketName
+	}
+	name := strings.TrimSpace(c.config.InternationalMarketName)
+	if name == "" {
+		return defaultInternationalMarketName
+	}
+	return name
+}
+
+func (c *Client) internationalCatalogTitle() string {
+	if c == nil {
+		return defaultInternationalCatalogTitle
+	}
+	title := strings.TrimSpace(c.config.InternationalCatalogTitle)
+	if title == "" {
+		return defaultInternationalCatalogTitle
+	}
+	return title
+}
+
+func (c *Client) internationalPriceListName() string {
+	if c == nil {
+		return defaultInternationalPriceListName
+	}
+	name := strings.TrimSpace(c.config.InternationalPriceListName)
+	if name == "" {
+		return defaultInternationalPriceListName
+	}
+	return name
 }
 
 func (c *Client) ensureIsraelMarketAndCatalog(ctx context.Context) (IsraelMarketResources, error) {
@@ -215,7 +298,7 @@ func (c *Client) ensureIsraelMarketAndCatalog(ctx context.Context) (IsraelMarket
 	}
 
 	if !strings.EqualFold(market.CurrencyCode, currencyILS) || market.LocalCurrencies {
-		if err := c.updateMarketCurrencySettings(ctx, market.ID); err != nil {
+		if err := c.updateMarketCurrencySettings(ctx, market.ID, currencyILS, false); err != nil {
 			return IsraelMarketResources{}, err
 		}
 		market.CurrencyCode = currencyILS
@@ -258,7 +341,7 @@ func (c *Client) ensureIsraelMarketAndCatalog(ctx context.Context) (IsraelMarket
 		return IsraelMarketResources{}, fmt.Errorf("shopify market %s missing catalog %s", market.ID, catalog.ID)
 	}
 
-	publication, priceList, err := c.ensureCatalogPublicationAndPriceList(ctx, catalog.ID)
+	publication, priceList, err := c.ensureCatalogPublicationAndPriceList(ctx, catalog.ID, israelPriceList, currencyILS)
 	if err != nil {
 		return IsraelMarketResources{}, err
 	}
@@ -276,7 +359,91 @@ func (c *Client) ensureIsraelMarketAndCatalog(ctx context.Context) (IsraelMarket
 		PriceListID:   priceList.ID,
 	}
 
-	if err := c.verifyIsraelMarketSetup(ctx, resources); err != nil {
+	if err := c.verifyMarketSetup(ctx, resources, currencyILS); err != nil {
+		return IsraelMarketResources{}, err
+	}
+
+	return resources, nil
+}
+
+func (c *Client) ensureInternationalMarketAndCatalog(ctx context.Context) (IsraelMarketResources, error) {
+	market, err := c.findInternationalMarket(ctx)
+	if err != nil {
+		return IsraelMarketResources{}, err
+	}
+	if market.ID == "" {
+		return IsraelMarketResources{}, fmt.Errorf(
+			"shopify international market not found (handle=%s name=%s)",
+			c.internationalMarketHandle(),
+			c.internationalMarketName(),
+		)
+	}
+	c.logSuccess(fmt.Sprintf("shopify market found id=%s handle=%s", market.ID, market.Handle))
+
+	if !strings.EqualFold(market.CurrencyCode, currencyUSD) || market.LocalCurrencies {
+		if err := c.updateMarketCurrencySettings(ctx, market.ID, currencyUSD, false); err != nil {
+			return IsraelMarketResources{}, err
+		}
+		market.CurrencyCode = currencyUSD
+		market.LocalCurrencies = false
+		c.logSuccess(fmt.Sprintf("shopify market currency updated id=%s currency=%s", market.ID, currencyUSD))
+	}
+	if !market.Enabled {
+		c.logWarning(fmt.Sprintf("shopify market disabled id=%s", market.ID))
+	}
+
+	catalogTitle := c.internationalCatalogTitle()
+	catalog, err := c.findCatalogByTitle(ctx, catalogTitle)
+	if err != nil {
+		return IsraelMarketResources{}, err
+	}
+	if catalog.ID == "" {
+		catalog, err = c.createCatalog(ctx, catalogTitle, market.ID)
+		if err != nil {
+			return IsraelMarketResources{}, err
+		}
+		c.logSuccess(fmt.Sprintf("shopify catalog created id=%s title=%s", catalog.ID, catalog.Title))
+	} else {
+		c.logSuccess(fmt.Sprintf("shopify catalog found id=%s title=%s", catalog.ID, catalog.Title))
+	}
+
+	attached, err := c.marketHasCatalog(ctx, market.ID, catalog.ID)
+	if err != nil {
+		return IsraelMarketResources{}, err
+	}
+	if !attached {
+		if err := c.addCatalogToMarket(ctx, market.ID, catalog.ID); err != nil {
+			return IsraelMarketResources{}, err
+		}
+		c.logSuccess(fmt.Sprintf("shopify market catalog attached market=%s catalog=%s", market.ID, catalog.ID))
+	}
+	attached, err = c.marketHasCatalog(ctx, market.ID, catalog.ID)
+	if err != nil {
+		return IsraelMarketResources{}, err
+	}
+	if !attached {
+		return IsraelMarketResources{}, fmt.Errorf("shopify market %s missing catalog %s", market.ID, catalog.ID)
+	}
+
+	publication, priceList, err := c.ensureCatalogPublicationAndPriceList(ctx, catalog.ID, c.internationalPriceListName(), currencyUSD)
+	if err != nil {
+		return IsraelMarketResources{}, err
+	}
+	if publication.ID != "" {
+		c.logSuccess(fmt.Sprintf("shopify publication ready id=%s", publication.ID))
+	}
+	if priceList.ID != "" {
+		c.logSuccess(fmt.Sprintf("shopify price list ready id=%s currency=%s", priceList.ID, priceList.Currency))
+	}
+
+	resources := IsraelMarketResources{
+		MarketID:      market.ID,
+		CatalogID:     catalog.ID,
+		PublicationID: publication.ID,
+		PriceListID:   priceList.ID,
+	}
+
+	if err := c.verifyMarketSetup(ctx, resources, currencyUSD); err != nil {
 		return IsraelMarketResources{}, err
 	}
 
@@ -358,6 +525,52 @@ func (c *Client) findIsraelMarket(ctx context.Context) (marketInfo, error) {
 	return found, nil
 }
 
+func (c *Client) findInternationalMarket(ctx context.Context) (marketInfo, error) {
+	handle := c.internationalMarketHandle()
+	name := c.internationalMarketName()
+	if strings.TrimSpace(handle) == "" && strings.TrimSpace(name) == "" {
+		return marketInfo{}, errors.New("shopify international market handle or name is required")
+	}
+	return c.findMarketByHandleOrName(ctx, handle, name)
+}
+
+func (c *Client) findMarketByHandleOrName(ctx context.Context, handle string, name string) (marketInfo, error) {
+	markets, err := c.listMarkets(ctx)
+	if err != nil {
+		return marketInfo{}, err
+	}
+	handle = strings.TrimSpace(handle)
+	name = strings.TrimSpace(name)
+	var found marketInfo
+	for _, market := range markets {
+		marketHandle := strings.TrimSpace(market.Handle)
+		marketName := strings.TrimSpace(market.Name)
+		matched := false
+		if handle != "" && strings.EqualFold(marketHandle, handle) {
+			matched = true
+		}
+		if !matched && name != "" && strings.EqualFold(marketName, name) {
+			matched = true
+		}
+		if !matched {
+			continue
+		}
+		if found.ID != "" {
+			c.logWarning(fmt.Sprintf("multiple markets matched handle=%s name=%s, keeping id=%s", handle, name, found.ID))
+			break
+		}
+		found = marketInfo{
+			ID:              strings.TrimSpace(market.ID),
+			Name:            marketName,
+			Handle:          marketHandle,
+			Enabled:         market.Enabled,
+			CurrencyCode:    strings.TrimSpace(market.CurrencySettings.BaseCurrency.CurrencyCode),
+			LocalCurrencies: market.CurrencySettings.LocalCurrencies,
+		}
+	}
+	return found, nil
+}
+
 func marketHasCountry(market dto.MarketNode, countryCode string) bool {
 	countryCode = strings.TrimSpace(countryCode)
 	for _, region := range market.Regions.Nodes {
@@ -419,7 +632,7 @@ func (c *Client) createIsraelMarket(ctx context.Context) (marketInfo, error) {
 	}, nil
 }
 
-func (c *Client) updateMarketCurrencySettings(ctx context.Context, marketID string) error {
+func (c *Client) updateMarketCurrencySettings(ctx context.Context, marketID string, currencyCode string, localCurrencies bool) error {
 	query := `
 	mutation marketUpdate($id: ID!, $input: MarketUpdateInput!) {
 		marketUpdate(id: $id, input: $input) {
@@ -428,10 +641,15 @@ func (c *Client) updateMarketCurrencySettings(ctx context.Context, marketID stri
 		}
 	}`
 
+	currencyCode = strings.TrimSpace(currencyCode)
+	if currencyCode == "" {
+		return errors.New("shopify market currency code is required")
+	}
+
 	input := map[string]any{
 		"currencySettings": map[string]any{
-			"baseCurrency":    currencyILS,
-			"localCurrencies": false,
+			"baseCurrency":    currencyCode,
+			"localCurrencies": localCurrencies,
 		},
 	}
 
@@ -626,7 +844,7 @@ func (c *Client) getCatalogDetails(ctx context.Context, catalogID string) (dto.P
 	return publication, priceList, nil
 }
 
-func (c *Client) ensureCatalogPublicationAndPriceList(ctx context.Context, catalogID string) (dto.PublicationNode, dto.PriceListNode, error) {
+func (c *Client) ensureCatalogPublicationAndPriceList(ctx context.Context, catalogID string, priceListName string, currencyCode string) (dto.PublicationNode, dto.PriceListNode, error) {
 	publication, priceList, err := c.getCatalogDetails(ctx, catalogID)
 	if err != nil {
 		return dto.PublicationNode{}, dto.PriceListNode{}, err
@@ -644,8 +862,8 @@ func (c *Client) ensureCatalogPublicationAndPriceList(ctx context.Context, catal
 		}
 	}
 
-	if priceList.ID == "" || !strings.EqualFold(strings.TrimSpace(priceList.Currency), currencyILS) {
-		priceList, err = c.createPriceList(ctx, catalogID)
+	if priceList.ID == "" || !strings.EqualFold(strings.TrimSpace(priceList.Currency), strings.TrimSpace(currencyCode)) {
+		priceList, err = c.createPriceList(ctx, catalogID, priceListName, currencyCode)
 		if err != nil {
 			return dto.PublicationNode{}, dto.PriceListNode{}, err
 		}
@@ -711,7 +929,7 @@ func (c *Client) updatePublicationAutoPublish(ctx context.Context, publicationID
 	return *data.PublicationUpdate.Publication, nil
 }
 
-func (c *Client) createPriceList(ctx context.Context, catalogID string) (dto.PriceListNode, error) {
+func (c *Client) createPriceList(ctx context.Context, catalogID string, priceListName string, currencyCode string) (dto.PriceListNode, error) {
 	query := `
 	mutation priceListCreate($input: PriceListCreateInput!) {
 		priceListCreate(input: $input) {
@@ -720,10 +938,19 @@ func (c *Client) createPriceList(ctx context.Context, catalogID string) (dto.Pri
 		}
 	}`
 
+	priceListName = strings.TrimSpace(priceListName)
+	if priceListName == "" {
+		return dto.PriceListNode{}, errors.New("shopify price list name is required")
+	}
+	currencyCode = strings.TrimSpace(currencyCode)
+	if currencyCode == "" {
+		return dto.PriceListNode{}, errors.New("shopify price list currency is required")
+	}
+
 	input := map[string]any{
 		"catalogId": catalogID,
-		"name":      israelPriceList,
-		"currency":  currencyILS,
+		"name":      priceListName,
+		"currency":  currencyCode,
 		"parent": map[string]any{
 			"adjustment": map[string]any{
 				"type":  "PERCENTAGE_INCREASE",
@@ -745,7 +972,7 @@ func (c *Client) createPriceList(ctx context.Context, catalogID string) (dto.Pri
 	return *data.PriceListCreate.PriceList, nil
 }
 
-func (c *Client) verifyIsraelMarketSetup(ctx context.Context, resources IsraelMarketResources) error {
+func (c *Client) verifyMarketSetup(ctx context.Context, resources IsraelMarketResources, currencyCode string) error {
 	if resources.MarketID == "" || resources.CatalogID == "" {
 		return errors.New("shopify market resources are incomplete")
 	}
@@ -764,7 +991,7 @@ func (c *Client) verifyIsraelMarketSetup(ctx context.Context, resources IsraelMa
 	if publication.ID == "" || !publication.AutoPublish {
 		return fmt.Errorf("shopify catalog %s publication not ready", resources.CatalogID)
 	}
-	if priceList.ID == "" || !strings.EqualFold(strings.TrimSpace(priceList.Currency), currencyILS) {
+	if priceList.ID == "" || !strings.EqualFold(strings.TrimSpace(priceList.Currency), strings.TrimSpace(currencyCode)) {
 		return fmt.Errorf("shopify catalog %s price list currency mismatch", resources.CatalogID)
 	}
 
@@ -957,7 +1184,7 @@ func (c *Client) getProductIDForVariant(ctx context.Context, variantID string) (
 	return strings.TrimSpace(data.ProductVariant.Product.ID), nil
 }
 
-func (c *Client) updateBaseUSDPrices(ctx context.Context, inputs []resolvedPriceInput) error {
+func (c *Client) updateBasePrices(ctx context.Context, inputs []resolvedPriceInput, currencyCode string) error {
 	if len(inputs) == 0 {
 		return nil
 	}
@@ -983,9 +1210,13 @@ func (c *Client) updateBaseUSDPrices(ctx context.Context, inputs []resolvedPrice
 			batch := items[start:end]
 			variants := make([]map[string]any, 0, len(batch))
 			for _, item := range batch {
+				priceAmount, err := priceForCurrency(item, currencyCode)
+				if err != nil {
+					return err
+				}
 				variants = append(variants, map[string]any{
 					"id":    item.VariantID,
-					"price": formatMoneyAmount(item.USDPrice),
+					"price": formatMoneyAmount(priceAmount),
 				})
 			}
 			var data productVariantsBulkUpdateData
@@ -1003,7 +1234,11 @@ func (c *Client) updateBaseUSDPrices(ctx context.Context, inputs []resolvedPrice
 				if item.SKU == "" {
 					continue
 				}
-				c.logSuccess(fmt.Sprintf("shopify price updated sku=%s usd=%s", item.SKU, formatMoneyAmount(item.USDPrice)))
+				priceAmount, err := priceForCurrency(item, currencyCode)
+				if err != nil {
+					return err
+				}
+				c.logSuccess(fmt.Sprintf("shopify price updated sku=%s %s=%s", item.SKU, strings.ToLower(currencyCode), formatMoneyAmount(priceAmount)))
 			}
 		}
 	}
@@ -1011,10 +1246,14 @@ func (c *Client) updateBaseUSDPrices(ctx context.Context, inputs []resolvedPrice
 	return nil
 }
 
-func (c *Client) addFixedILSPrices(ctx context.Context, priceListID string, inputs []resolvedPriceInput) error {
+func (c *Client) addFixedPrices(ctx context.Context, priceListID string, inputs []resolvedPriceInput, currencyCode string) error {
 	priceListID = strings.TrimSpace(priceListID)
 	if priceListID == "" {
 		return errors.New("shopify price list id is required")
+	}
+	currencyCode = strings.TrimSpace(currencyCode)
+	if currencyCode == "" {
+		return errors.New("shopify price list currency is required")
 	}
 	if len(inputs) == 0 {
 		return nil
@@ -1035,11 +1274,15 @@ func (c *Client) addFixedILSPrices(ctx context.Context, priceListID string, inpu
 		batch := inputs[start:end]
 		prices := make([]map[string]any, 0, len(batch))
 		for _, item := range batch {
+			priceAmount, err := priceForCurrency(item, currencyCode)
+			if err != nil {
+				return err
+			}
 			prices = append(prices, map[string]any{
 				"variantId": item.VariantID,
 				"price": map[string]any{
-					"amount":       formatMoneyAmount(item.ILSPrice),
-					"currencyCode": currencyILS,
+					"amount":       formatMoneyAmount(priceAmount),
+					"currencyCode": currencyCode,
 				},
 			})
 		}
@@ -1058,11 +1301,26 @@ func (c *Client) addFixedILSPrices(ctx context.Context, priceListID string, inpu
 			if item.SKU == "" {
 				continue
 			}
-			c.logSuccess(fmt.Sprintf("shopify price updated sku=%s ils=%s", item.SKU, formatMoneyAmount(item.ILSPrice)))
+			priceAmount, err := priceForCurrency(item, currencyCode)
+			if err != nil {
+				return err
+			}
+			c.logSuccess(fmt.Sprintf("shopify price updated sku=%s %s=%s", item.SKU, strings.ToLower(currencyCode), formatMoneyAmount(priceAmount)))
 		}
 	}
 
 	return nil
+}
+
+func priceForCurrency(item resolvedPriceInput, currencyCode string) (float64, error) {
+	switch strings.ToUpper(strings.TrimSpace(currencyCode)) {
+	case currencyUSD:
+		return item.USDPrice, nil
+	case currencyILS:
+		return item.ILSPrice, nil
+	default:
+		return 0, fmt.Errorf("shopify unsupported currency %q for pricing", currencyCode)
+	}
 }
 
 func formatMoneyAmount(amount float64) string {

@@ -20,6 +20,12 @@ type ShopifyConfig struct {
 	Token      string
 	APIVer     string
 	Timeout    time.Duration
+	// Optional pricing settings used by price sync.
+	BaseCurrency               string
+	InternationalMarketHandle  string
+	InternationalMarketName    string
+	InternationalCatalogTitle  string
+	InternationalPriceListName string
 }
 
 type MysqlConfig struct {
