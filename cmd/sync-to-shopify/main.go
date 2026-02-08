@@ -40,14 +40,14 @@ func main() {
 	// 	return usecases.NewSyncCategories(apixClientCategory, shopifyClientCategory, shopifyClient, logger).Run(ctx)
 	// })
 
-	runStep(logger, "syncAttributes", func() error {
-		attributeClient, ok := shopifyClient.(shopify.AttributeService)
-		if !ok {
-			return fmt.Errorf("shopify attribute service unavailable")
-		}
-		apixAttributeClient := apix.NewAttributeServiceClient(cfg.ApiHasav, httpClient, logger)
-		return usecases.NewSyncAttributes(apixAttributeClient, attributeClient, logger).Run(ctx)
-	})
+	// runStep(logger, "syncAttributes", func() error {
+	// 	attributeClient, ok := shopifyClient.(shopify.AttributeService)
+	// 	if !ok {
+	// 		return fmt.Errorf("shopify attribute service unavailable")
+	// 	}
+	// 	apixAttributeClient := apix.NewAttributeServiceClient(cfg.ApiHasav, httpClient, logger)
+	// 	return usecases.NewSyncAttributes(apixAttributeClient, attributeClient, logger).Run(ctx)
+	// })
 
 	// runStep(logger, "syncPrices", func() error {
 	// 	priceClient, ok := shopifyClient.(shopify.PriceService)
@@ -66,6 +66,15 @@ func main() {
 	// 	apixStockClient := apix.NewStockService(cfg.ApiHasav, httpClient, logger)
 	// 	return usecases.NewSyncStocks(apixStockClient, stockClient, logger).Run(ctx)
 	// })
+
+	runStep(logger, "syncRelatedProducts", func() error {
+		relatedClient, ok := shopifyClient.(shopify.RelatedService)
+		if !ok {
+			return fmt.Errorf("shopify related service unavailable")
+		}
+		apixRelatedClient := apix.NewRellated(cfg.ApiHasav, httpClient, logger)
+		return usecases.NewSyncRelatedProducts(apixRelatedClient, relatedClient, logger).Run(ctx)
+	})
 
 	triggerFileSync(logger, httpClient, cfg.ApiHasav.BaseUrl)
 
