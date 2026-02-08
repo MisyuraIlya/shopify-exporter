@@ -77,6 +77,7 @@ func (c *NewStockS) FetchStocks(ctx context.Context) ([]model.Stock, error) {
 	return resData, nil
 }
 
+// CLIENT WISH TO TAKE STOCK AND - 3
 func dtoMap(dto dto.Stock) model.Stock {
 	quantity := int32(0)
 	if !math.IsNaN(dto.ItemWarHBal) && !math.IsInf(dto.ItemWarHBal, 0) {
@@ -84,6 +85,6 @@ func dtoMap(dto dto.Stock) model.Stock {
 	}
 	return model.Stock{
 		Sku:   dto.ItemKey,
-		Stock: quantity,
+		Stock: quantity - 3,
 	}
 }

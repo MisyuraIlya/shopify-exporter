@@ -74,7 +74,7 @@ func (c *NewAttributeService) apiResponse(ctx context.Context) (dto.AttributesRe
 		{"משקל נטו (ק\"ג)", "Net weight (kg)"},                 // noteId = 76 = 4
 		{"משקל כולל אריזה (ק''ג)", "Weight With Packaging"},    // noteId = 27 = 5
 		{"קיבולת הכוס (מ\"ל)", "Cup capacity (ml)"},            // noteId = 77 = 6
-		{"תיאור", "Description"},                               // noteId = 20 = 7
+		{"הערה", "Description"},                                // noteId = 20 = 7
 		{"Item Size (inch)", "Item Size (inch)"},               // noteId = 10 = 8
 		{"מידות אינצ' מוצר עם קופסה", "Packaging Size (inch)"}, // noteId = 16 = 9
 	}
