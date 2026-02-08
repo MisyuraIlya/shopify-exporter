@@ -5,11 +5,12 @@ type ProductsOrderRequest struct {
 }
 
 type ProductOrderCategoryDto struct {
-	CategoryNoteID int    `json:"categoryNoteId"`
-	CategoryValue  string `json:"categoryValue"`
-	OrderNoteID    int    `json:"orderNoteId"`
-	OrderValue     string `json:"orderValue"`
-	OrderNumber    int    `json:"orderNumber"`
+	CategoryNoteID  int    `json:"categoryNoteId"`
+	CategoryValue   string `json:"categoryValue"`
+	CategoryEnglish string `json:"categoryEnglish"`
+	OrderNoteID     int    `json:"orderNoteId"`
+	OrderValue      string `json:"orderValue"`
+	OrderNumber     int    `json:"orderNumber"`
 }
 
 type ProductOrderDto struct {

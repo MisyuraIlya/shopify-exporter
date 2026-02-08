@@ -96,11 +96,12 @@ func mapProductOrder(data dto.ProductOrderDto) model.ProductOrder {
 	categories := make([]model.ProductOrderCategory, 0, len(data.Categories))
 	for _, category := range data.Categories {
 		categories = append(categories, model.ProductOrderCategory{
-			CategoryNoteID: category.CategoryNoteID,
-			CategoryValue:  strings.TrimSpace(category.CategoryValue),
-			OrderNoteID:    category.OrderNoteID,
-			OrderValue:     strings.TrimSpace(category.OrderValue),
-			OrderNumber:    category.OrderNumber,
+			CategoryNoteID:  category.CategoryNoteID,
+			CategoryValue:   strings.TrimSpace(category.CategoryValue),
+			CategoryEnglish: strings.TrimSpace(category.CategoryEnglish),
+			OrderNoteID:     category.OrderNoteID,
+			OrderValue:      strings.TrimSpace(category.OrderValue),
+			OrderNumber:     category.OrderNumber,
 		})
 	}
 
