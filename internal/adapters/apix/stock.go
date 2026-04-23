@@ -10,8 +10,10 @@ import (
 	"net/http"
 	"shopify-exporter/internal/adapters/apix/dto"
 	"shopify-exporter/internal/config"
+	"shopify-exporter/internal/debugsync"
 	"shopify-exporter/internal/domain/model"
 	"shopify-exporter/internal/logging"
+	"strings"
 )
 
 type StockService interface {
@@ -72,7 +74,16 @@ func (c *NewStockS) FetchStocks(ctx context.Context) ([]model.Stock, error) {
 
 	resData := make([]model.Stock, 0, len(result.Items))
 	for _, v := range result.Items {
-		resData = append(resData, dtoMap(v))
+		mapped := dtoMap(v)
+		if c.logger != nil && debugsync.MatchSKU(v.ItemKey) {
+			c.logger.Log(fmt.Sprintf(
+				"trace stock api sku=%s raw_itemwarhbal=%.2f exported_quantity=%d buffer=3",
+				strings.TrimSpace(v.ItemKey),
+				v.ItemWarHBal,
+				mapped.Stock,
+			))
+		}
+		resData = append(resData, mapped)
 	}
 	return resData, nil
 }

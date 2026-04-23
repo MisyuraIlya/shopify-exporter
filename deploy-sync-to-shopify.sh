@@ -8,6 +8,8 @@ SERVICE="shopify-exporter-sync"
 ZONE="europe-west8-b"
 INSTANCE="instance-emanuel"
 REMOTE_ENV="/home/spetsar/shopify-exporter.env"
+REMOTE_LOG_DIR="/home/spetsar/shopify-exporter-logs"
+CONTAINER_LOG_DIR="/var/log/shopify-exporter"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOCAL_TAG="${SERVICE}:latest"
@@ -44,10 +46,15 @@ gcloud compute ssh "${INSTANCE}" \
     echo '— Removing old container (if exists)'
     sudo docker rm -f ${SERVICE} >/dev/null 2>&1 || true
 
+    echo '— Ensuring log directory exists'
+    sudo mkdir -p ${REMOTE_LOG_DIR}
+
     echo '— Starting new container'
     sudo docker run -d --rm \
       --name ${SERVICE} \
       --env-file ${REMOTE_ENV} \
+      --env LOG_FILE_DIR=${CONTAINER_LOG_DIR} \
+      --volume ${REMOTE_LOG_DIR}:${CONTAINER_LOG_DIR} \
       ${REMOTE_IMAGE}
 
     echo '— Pruning unused images'

@@ -11,6 +11,6 @@ func main() {
 	if err != nil {
 		return
 	}
-	logging.NewLogger(cfg.TelegramBot)
+	logging.NewNamedLogger(cfg.TelegramBot, "sync-orders")
 
 }

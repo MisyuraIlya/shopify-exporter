@@ -47,4 +47,6 @@ type TelegramBotConfig struct {
 	Token  string
 	// LogOutput controls logger targets: stdout, telegram, both, none.
 	LogOutput string
+	// LogFileDir stores one log file per run when set.
+	LogFileDir string
 }

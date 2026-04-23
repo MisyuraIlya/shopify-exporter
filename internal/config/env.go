@@ -117,6 +117,7 @@ func LoadForDailySync() (*DailyConfig, error) {
 	cfgDaily.TelegramBot.ChatId = stringWithDefault("TELEGRAM_CHAT_ID", "")
 	cfgDaily.TelegramBot.Token = stringWithDefault("TELEGRAM_TOKEN", "")
 	cfgDaily.TelegramBot.LogOutput = stringWithDefault("LOG_OUTPUT", "")
+	cfgDaily.TelegramBot.LogFileDir = stringWithDefault("LOG_FILE_DIR", "")
 	return cfgDaily, nil
 }
 
@@ -214,6 +215,7 @@ func LoadForSyncOrder() (*OrdersConfig, error) {
 	cfgOrd.TelegramBot.ChatId = stringWithDefault("TELEGRAM_CHAT_ID", "")
 	cfgOrd.TelegramBot.Token = stringWithDefault("TELEGRAM_TOKEN", "")
 	cfgOrd.TelegramBot.LogOutput = stringWithDefault("LOG_OUTPUT", "")
+	cfgOrd.TelegramBot.LogFileDir = stringWithDefault("LOG_FILE_DIR", "")
 
 	return cfgOrd, nil
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"shopify-exporter/internal/adapters/apix"
 	"shopify-exporter/internal/adapters/shopify"
+	"shopify-exporter/internal/debugsync"
 	"shopify-exporter/internal/logging"
 	"strings"
 	"sync"
@@ -50,6 +51,7 @@ func (c *ClientStock) Run(ctx context.Context) error {
 	skippedEmptySKU := 0
 	skippedNegative := 0
 	duplicateSKU := 0
+	filteredOut := 0
 
 	for _, item := range stocks {
 		sku := strings.TrimSpace(item.Sku)
@@ -57,16 +59,39 @@ func (c *ClientStock) Run(ctx context.Context) error {
 			skippedEmptySKU++
 			continue
 		}
+		if !debugsync.ShouldProcessSKU(sku) {
+			filteredOut++
+			continue
+		}
 		if item.Stock < 0 {
+			if c.logger != nil && debugsync.MatchSKU(sku) {
+				c.logger.Log(fmt.Sprintf("trace stock skipped sku=%s reason=negative api_quantity=%d", sku, item.Stock))
+			}
 			skippedNegative++
 			continue
 		}
-		if _, ok := stockBySKU[sku]; ok {
+		if previous, ok := stockBySKU[sku]; ok {
 			duplicateSKU++
+			if c.logger != nil && debugsync.MatchSKU(sku) {
+				c.logger.Log(fmt.Sprintf(
+					"trace stock duplicate sku=%s previous_quantity=%d replacement_quantity=%d",
+					sku,
+					previous.Quantity,
+					int(item.Stock),
+				))
+			}
 		}
 		stockBySKU[sku] = shopify.StockInput{
 			SKU:      sku,
 			Quantity: int(item.Stock),
+		}
+		if c.logger != nil && debugsync.MatchSKU(sku) {
+			c.logger.Log(fmt.Sprintf(
+				"trace stock prepared sku=%s api_quantity=%d shopify_quantity=%d",
+				sku,
+				item.Stock,
+				int(item.Stock),
+			))
 		}
 	}
 
@@ -125,11 +150,12 @@ func (c *ClientStock) Run(ctx context.Context) error {
 
 	if c.logger != nil {
 		c.logger.LogSuccess(fmt.Sprintf(
-			"Stock sync completed sku=%d skipped_empty_sku=%d skipped_negative=%d duplicates=%d",
+			"Stock sync completed sku=%d skipped_empty_sku=%d skipped_negative=%d duplicates=%d filtered_out=%d",
 			len(inputs),
 			skippedEmptySKU,
 			skippedNegative,
 			duplicateSKU,
+			filteredOut,
 		))
 	}
 

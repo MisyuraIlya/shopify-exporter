@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"shopify-exporter/internal/adapters/apix/dto"
 	"shopify-exporter/internal/config"
+	"shopify-exporter/internal/debugsync"
 	"shopify-exporter/internal/domain/model"
 	"shopify-exporter/internal/logging"
 	"strings"
@@ -77,6 +78,19 @@ func (c *NewPriceService) PriceList(ctx context.Context) ([]model.Price, error) 
 
 	prices := make([]model.Price, 0, len(apiResp.Prices))
 	for _, v := range apiResp.Prices {
+		if c.logger != nil && debugsync.MatchSKU(v.ItemKey) {
+			c.logger.Log(fmt.Sprintf(
+				"trace price api sku=%s raw_currency=%q currency=%s price=%.2f price_list=%d dflag=%d use_fid=%d changed=%s",
+				strings.TrimSpace(v.ItemKey),
+				v.CurrencyCode,
+				normalizeCurrencyCode(v.CurrencyCode),
+				float64(v.Price),
+				v.PriceListNumber,
+				v.DFlag,
+				v.UseFID,
+				strings.TrimSpace(v.CngDate),
+			))
+		}
 		prices = append(prices, mapPrice(v))
 	}
 

@@ -9,6 +9,7 @@ import (
 	"shopify-exporter/internal/adapters/shopify"
 	"shopify-exporter/internal/app/usecases"
 	"shopify-exporter/internal/config"
+	"shopify-exporter/internal/debugsync"
 	infrahttp "shopify-exporter/internal/infra/http"
 	"shopify-exporter/internal/logging"
 	"strings"
@@ -21,26 +22,32 @@ func main() {
 		fmt.Printf("error %v\n", err)
 		return
 	}
-	logger := logging.NewLogger(cfg.TelegramBot)
+	logger := logging.NewNamedLogger(cfg.TelegramBot, "sync-to-shopify")
 	httpClient := infrahttp.NewClient(maxDuration(cfg.Shopify.Timeout, cfg.ApiHasav.Timeout))
 
 	logger.Log("Docker initialized start work..")
+	if logger != nil && debugsync.HasOnlyStepFilter() {
+		logger.Log("sync step filter active via " + debugsync.OnlyStepsEnv)
+	}
+	if logger != nil && debugsync.HasOnlySKUFilter() {
+		logger.Log("sync sku filter active via " + debugsync.OnlySKUsEnv)
+	}
 
 	ctx := context.Background()
 	shopifyClient := shopify.NewClient(cfg.Shopify, httpClient, logger)
 	apixClient := apix.NewClient(cfg.ApiHasav, httpClient)
 
-	runStep(logger, "syncProducts", func() error {
+	runStepIfEnabled(logger, "syncProducts", func() error {
 		return usecases.NewSyncProducts(apixClient, shopifyClient, logger).Run(ctx)
 	})
 
-	runStep(logger, "syncCategories", func() error {
+	runStepIfEnabled(logger, "syncCategories", func() error {
 		apixClientCategory := apix.NewCategoryClientService(cfg.ApiHasav, httpClient, logger)
 		shopifyClientCategory := shopify.NewShopifyCategoryService(cfg.Shopify, httpClient, logger)
 		return usecases.NewSyncCategories(apixClientCategory, shopifyClientCategory, shopifyClient, logger).Run(ctx)
 	})
 
-	runStep(logger, "syncAttributes", func() error {
+	runStepIfEnabled(logger, "syncAttributes", func() error {
 		attributeClient, ok := shopifyClient.(shopify.AttributeService)
 		if !ok {
 			return fmt.Errorf("shopify attribute service unavailable")
@@ -49,7 +56,7 @@ func main() {
 		return usecases.NewSyncAttributes(apixAttributeClient, attributeClient, logger).Run(ctx)
 	})
 
-	runStep(logger, "syncPrices", func() error {
+	runStepIfEnabled(logger, "syncPrices", func() error {
 		priceClient, ok := shopifyClient.(shopify.PriceService)
 		if !ok {
 			return fmt.Errorf("shopify price service unavailable")
@@ -58,7 +65,7 @@ func main() {
 		return usecases.NewSyncPrices(apixPriceClient, priceClient, logger).Run(ctx)
 	})
 
-	runStep(logger, "syncStocks", func() error {
+	runStepIfEnabled(logger, "syncStocks", func() error {
 		stockClient, ok := shopifyClient.(shopify.StockService)
 		if !ok {
 			return fmt.Errorf("shopify stock service unavailable")
@@ -67,7 +74,7 @@ func main() {
 		return usecases.NewSyncStocks(apixStockClient, stockClient, logger).Run(ctx)
 	})
 
-	runStep(logger, "syncRelatedProducts", func() error {
+	runStepIfEnabled(logger, "syncRelatedProducts", func() error {
 		relatedClient, ok := shopifyClient.(shopify.RelatedService)
 		if !ok {
 			return fmt.Errorf("shopify related service unavailable")
@@ -76,7 +83,7 @@ func main() {
 		return usecases.NewSyncRelatedProducts(apixRelatedClient, relatedClient, logger).Run(ctx)
 	})
 
-	runStep(logger, "syncProductsOrder", func() error {
+	runStepIfEnabled(logger, "syncProductsOrder", func() error {
 		orderClient, ok := shopifyClient.(shopify.ProductOrderService)
 		if !ok {
 			return fmt.Errorf("shopify product order service unavailable")
@@ -85,7 +92,11 @@ func main() {
 		return usecases.NewSyncProductsOrder(apixOrderClient, orderClient, logger).Run(ctx)
 	})
 
-	triggerFileSync(logger, httpClient, cfg.ApiHasav.BaseUrl)
+	if debugsync.ShouldRunStep("fileSync") {
+		triggerFileSync(logger, httpClient, cfg.ApiHasav.BaseUrl)
+	} else if logger != nil {
+		logger.Log("fileSync skipped by " + debugsync.OnlyStepsEnv)
+	}
 
 	logger.LogSuccess("sync completed")
 }
@@ -104,6 +115,16 @@ func runStep(logger logging.LoggerService, name string, run func() error) {
 	if err := run(); err != nil && logger != nil {
 		logger.LogError(name+" error", err)
 	}
+}
+
+func runStepIfEnabled(logger logging.LoggerService, name string, run func() error) {
+	if !debugsync.ShouldRunStep(name) {
+		if logger != nil {
+			logger.Log(name + " skipped by " + debugsync.OnlyStepsEnv)
+		}
+		return
+	}
+	runStep(logger, name, run)
 }
 
 func triggerFileSync(logger logging.LoggerService, httpClient *http.Client, baseURL string) {

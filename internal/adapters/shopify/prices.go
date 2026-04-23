@@ -28,6 +28,7 @@ const (
 	maxFixedPriceBatchSize = 250
 	maxVariantsBatchSize   = 250
 	maxVariantsPageSize    = 250
+	smallVariantLookupSize = 25
 )
 
 type PriceService interface {
@@ -150,6 +151,10 @@ func (c *Client) UpsertPricesBatch(ctx context.Context, inputs []PriceUpsertInpu
 	if err != nil {
 		return err
 	}
+	baseCurrency := c.baseCurrencyCode()
+	if err := validateSupportedCurrency(baseCurrency); err != nil {
+		return err
+	}
 
 	skippedMissing := 0
 	skuLookup, err := c.buildVariantLookup(ctx, inputs)
@@ -183,6 +188,16 @@ func (c *Client) UpsertPricesBatch(ctx context.Context, inputs []PriceUpsertInpu
 			}
 			return err
 		}
+		c.traceSKU(
+			item.SKU,
+			"price resolved product_id=%s variant_id=%s usd=%.2f ils=%.2f base_currency=%s israel_price_list_id=%s",
+			item.ProductID,
+			item.VariantID,
+			item.USDPrice,
+			item.ILSPrice,
+			baseCurrency,
+			resources.PriceListID,
+		)
 		resolved = append(resolved, item)
 	}
 
@@ -193,10 +208,6 @@ func (c *Client) UpsertPricesBatch(ctx context.Context, inputs []PriceUpsertInpu
 		return nil
 	}
 
-	baseCurrency := c.baseCurrencyCode()
-	if err := validateSupportedCurrency(baseCurrency); err != nil {
-		return err
-	}
 	if err := c.updateBasePrices(ctx, resolved, baseCurrency); err != nil {
 		return err
 	}
@@ -1104,14 +1115,16 @@ func (c *Client) findVariantBySKU(ctx context.Context, sku string) (string, stri
 }
 
 func (c *Client) buildVariantLookup(ctx context.Context, inputs []PriceUpsertInput) (map[string]variantLookup, error) {
-	needsSKU := false
+	needsSKU := 0
 	for _, input := range inputs {
 		if input.VariantID == "" && strings.TrimSpace(input.SKU) != "" {
-			needsSKU = true
-			break
+			needsSKU++
 		}
 	}
-	if !needsSKU {
+	if needsSKU == 0 {
+		return nil, nil
+	}
+	if needsSKU <= smallVariantLookupSize {
 		return nil, nil
 	}
 
@@ -1222,6 +1235,14 @@ func (c *Client) updateBasePrices(ctx context.Context, inputs []resolvedPriceInp
 				if err != nil {
 					return err
 				}
+				c.traceSKU(
+					item.SKU,
+					"price base mutation product_id=%s variant_id=%s currency=%s amount=%s",
+					productID,
+					item.VariantID,
+					strings.ToUpper(strings.TrimSpace(currencyCode)),
+					formatMoneyAmount(priceAmount),
+				)
 				variants = append(variants, map[string]any{
 					"id":    item.VariantID,
 					"price": formatMoneyAmount(priceAmount),
@@ -1286,6 +1307,14 @@ func (c *Client) addFixedPrices(ctx context.Context, priceListID string, inputs 
 			if err != nil {
 				return err
 			}
+			c.traceSKU(
+				item.SKU,
+				"price fixed mutation price_list_id=%s variant_id=%s currency=%s amount=%s",
+				priceListID,
+				item.VariantID,
+				strings.ToUpper(strings.TrimSpace(currencyCode)),
+				formatMoneyAmount(priceAmount),
+			)
 			prices = append(prices, map[string]any{
 				"variantId": item.VariantID,
 				"price": map[string]any{

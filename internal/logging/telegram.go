@@ -44,11 +44,16 @@ const (
 )
 
 func NewLogger(cfg config.TelegramBotConfig) LoggerService {
+	return NewNamedLogger(cfg, "")
+}
+
+func NewNamedLogger(cfg config.TelegramBotConfig, jobName string) LoggerService {
 	output := strings.ToLower(strings.TrimSpace(cfg.LogOutput))
 	if output == "" {
 		output = "stdout"
 	}
 
+	loggers := make([]LoggerService, 0, 3)
 	stdout := &stdoutLogger{}
 	telegram := LoggerService(nil)
 	if cfg.ChatId == "" || cfg.Token == "" {
@@ -58,26 +63,52 @@ func NewLogger(cfg config.TelegramBotConfig) LoggerService {
 	} else {
 		telegram = &Creds{Creds: cfg}
 	}
+	fileLogger, filePath, err := newFileLogger(cfg.LogFileDir, jobName)
+	if err != nil {
+		fmt.Printf("[WARNING]: file logger init failed: %v\n", err)
+	} else if fileLogger != nil {
+		loggers = append(loggers, fileLogger)
+	}
 
 	switch output {
 	case "stdout":
-		return stdout
+		loggers = append(loggers, stdout)
 	case "telegram":
 		if telegram == nil {
-			return stdout
+			loggers = append(loggers, stdout)
+			break
 		}
-		return telegram
+		loggers = append(loggers, telegram)
 	case "both":
 		if telegram == nil {
-			return stdout
+			loggers = append(loggers, stdout)
+			break
 		}
-		return &multiLogger{loggers: []LoggerService{stdout, telegram}}
+		loggers = append(loggers, stdout, telegram)
 	case "none":
-		return nil
+		if len(loggers) == 0 {
+			return nil
+		}
 	default:
 		fmt.Printf("[WARNING]: unknown LOG_OUTPUT=%q, defaulting to stdout\n", cfg.LogOutput)
-		return stdout
+		loggers = append(loggers, stdout)
 	}
+
+	if len(loggers) == 0 {
+		return nil
+	}
+	if len(loggers) == 1 {
+		if filePath != "" {
+			loggers[0].Log("file logger path=" + filePath)
+		}
+		return loggers[0]
+	}
+
+	logger := &multiLogger{loggers: loggers}
+	if filePath != "" {
+		logger.Log("file logger path=" + filePath)
+	}
+	return logger
 }
 
 func (c *Creds) Log(value string) {

@@ -88,6 +88,14 @@ func (c *Client) SetOnHandQuantities(ctx context.Context, inputs []StockInput) e
 			Quantity:        input.Quantity,
 			Tracked:         tracked,
 		})
+		c.traceSKU(
+			input.SKU,
+			"stock resolved inventory_item_id=%s location_id=%s tracked=%t quantity=%d",
+			inventoryItemID,
+			locationID,
+			tracked,
+			input.Quantity,
+		)
 	}
 
 	if len(resolved) == 0 {
@@ -120,6 +128,13 @@ func (c *Client) SetOnHandQuantities(ctx context.Context, inputs []StockInput) e
 		}
 		payload := make([]map[string]any, 0, len(batch))
 		for _, item := range batch {
+			c.traceSKU(
+				item.SKU,
+				"stock mutation inventory_item_id=%s location_id=%s quantity=%d",
+				item.InventoryItemID,
+				locationID,
+				item.Quantity,
+			)
 			payload = append(payload, map[string]any{
 				"inventoryItemId": item.InventoryItemID,
 				"locationId":      locationID,
@@ -137,6 +152,15 @@ func (c *Client) SetOnHandQuantities(ctx context.Context, inputs []StockInput) e
 		}
 		if err := userErrorsToDetailedError("inventorySetOnHandQuantities", data.InventorySetOnHandQuantities.UserErrors); err != nil {
 			return err
+		}
+		for _, item := range batch {
+			c.traceSKU(
+				item.SKU,
+				"stock synced inventory_item_id=%s location_id=%s quantity=%d",
+				item.InventoryItemID,
+				locationID,
+				item.Quantity,
+			)
 		}
 	}
 

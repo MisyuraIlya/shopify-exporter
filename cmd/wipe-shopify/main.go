@@ -17,7 +17,7 @@ func main() {
 		return
 	}
 
-	logger := logging.NewLogger(cfg.TelegramBot)
+	logger := logging.NewNamedLogger(cfg.TelegramBot, "wipe-shopify")
 	httpClient := infrahttp.NewClient(cfg.Shopify.Timeout)
 
 	logger.Log("wipe shopify started")
