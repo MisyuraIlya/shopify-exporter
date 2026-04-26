@@ -1,11 +1,52 @@
 package config
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
+
+func loadDotEnv() error {
+	file, err := os.Open(".env")
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		line = strings.TrimPrefix(line, "export ")
+
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" {
+			continue
+		}
+		if _, exists := os.LookupEnv(key); exists {
+			continue
+		}
+
+		value = strings.Trim(value, `"'`)
+		if err := os.Setenv(key, value); err != nil {
+			return err
+		}
+	}
+	return scanner.Err()
+}
 
 func requriedString(key string) (string, error) {
 	variable, isOk := os.LookupEnv(key)
@@ -49,6 +90,10 @@ func durationWithDefualt(key string, def time.Duration) (time.Duration, error) {
 }
 
 func LoadForDailySync() (*DailyConfig, error) {
+	if err := loadDotEnv(); err != nil {
+		return nil, err
+	}
+
 	shopifyBaseUrl, err := requriedString("SHOPIFY_SHOP_DOMAIN")
 	if err != nil {
 		return nil, err
@@ -122,6 +167,10 @@ func LoadForDailySync() (*DailyConfig, error) {
 }
 
 func LoadForSyncOrder() (*OrdersConfig, error) {
+	if err := loadDotEnv(); err != nil {
+		return nil, err
+	}
+
 	shopifyBaseUrl, err := requriedString("SHOPIFY_SHOP_DOMAIN")
 	if err != nil {
 		return nil, err

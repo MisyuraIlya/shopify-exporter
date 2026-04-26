@@ -105,7 +105,7 @@ type NewClientService interface {
 	UpdateLocalization(ctx context.Context, product model.Product, productGid string) error
 	GetCollectionProducts(ctx context.Context) ([]model.Product, error)
 	UnpublishProduct(ctx context.Context, productId string) error
-	CheckExistProductBySku(product model.Product) (bool, string)
+	CheckExistProductBySku(ctx context.Context, product model.Product) (bool, string, error)
 	AttachCategoryToProduct(ctx context.Context, productCategory model.ProductCategories)
 }
 
@@ -151,17 +151,18 @@ func (c *Client) logWarning(message string) {
 }
 
 func (c *Client) CreateProduct(ctx context.Context, product model.Product) (string, error) {
+	title := shopifyProductTitle(product)
 
-	if product.EnglishTitle == "" {
-		return "", errors.New("shopify product title is required")
+	if title == "" {
+		return "", fmt.Errorf("shopify product title is required sku=%s", strings.TrimSpace(product.Sku))
 	}
 
 	input := map[string]any{
-		"title":  product.EnglishTitle,
+		"title":  title,
 		"status": productStatus(product.IsPublished),
 	}
-	if product.Description != "" {
-		input["descriptionHtml"] = product.Description
+	if description := strings.TrimSpace(product.Description); description != "" {
+		input["descriptionHtml"] = description
 	}
 
 	query := `
@@ -221,13 +222,11 @@ func (c *Client) UpdateProduct(ctx context.Context, product model.Product, produ
 		"status": productStatus(product.IsPublished),
 	}
 
-	if title := strings.TrimSpace(product.EnglishTitle); title != "" {
-		input["title"] = title
-	} else if title := strings.TrimSpace(product.EnglishTitle); title != "" {
+	if title := shopifyProductTitle(product); title != "" {
 		input["title"] = title
 	}
 	if strings.TrimSpace(product.Description) != "" {
-		input["descriptionHtml"] = product.Description
+		input["descriptionHtml"] = strings.TrimSpace(product.Description)
 	}
 
 	query := `
@@ -267,10 +266,10 @@ func (c *Client) UpdateProduct(ctx context.Context, product model.Product, produ
 	return nil
 }
 
-func (c *Client) CheckExistProductBySku(product model.Product) (bool, string) {
+func (c *Client) CheckExistProductBySku(ctx context.Context, product model.Product) (bool, string, error) {
 	sku := strings.TrimSpace(product.Sku)
 	if sku == "" {
-		return false, ""
+		return false, "", nil
 	}
 
 	queryValue := sku
@@ -292,21 +291,21 @@ func (c *Client) CheckExistProductBySku(product model.Product) (bool, string) {
 	}`
 
 	var data productVariantSearchData
-	err := c.graphqlRequest(context.Background(), query, map[string]any{
+	err := c.graphqlRequest(ctx, query, map[string]any{
 		"first": 1,
 		"query": searchQuery,
 	}, &data)
 	if err != nil {
 		c.logError("shopify product variant search failed", err)
-		return false, ""
+		return false, "", err
 	}
 
 	if len(data.ProductVariants.Nodes) == 0 {
-		return false, ""
+		return false, "", nil
 	}
 
 	gid := strings.TrimSpace(data.ProductVariants.Nodes[0].Product.ID)
-	return gid != "", gid
+	return gid != "", gid, nil
 }
 
 func (c *Client) AttachCategoryToProduct(ctx context.Context, productCategory model.ProductCategories) {
@@ -642,8 +641,14 @@ func (c *Client) graphqlRequest(ctx context.Context, query string, variables map
 	}
 
 	for attempt := 0; attempt <= graphqlRetryMax; attempt++ {
+		release, err := adminGraphQLLimiter.begin(ctx)
+		if err != nil {
+			return err
+		}
+
 		raw, err := c.shopifyAPIRequest(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 		if err != nil {
+			release()
 			if attempt < graphqlRetryMax && isRetryableHTTPError(err) {
 				if err := sleepWithContext(ctx, retryDelay(attempt)); err != nil {
 					return err
@@ -658,14 +663,18 @@ func (c *Client) graphqlRequest(ctx context.Context, query string, variables map
 
 		var resp dto.GraphQLResponse[json.RawMessage]
 		if err := json.Unmarshal(raw, &resp); err != nil {
+			release()
 			if !suppressLogs {
 				c.logError("shopify graphql response unmarshal failed", err)
 			}
 			return err
 		}
+		adminGraphQLLimiter.observe(resp.Extensions.Cost)
+		release()
 		if len(resp.Errors) > 0 {
 			if isThrottleGraphQLError(resp.Errors) && attempt < graphqlRetryMax {
-				if err := sleepWithContext(ctx, retryDelay(attempt)); err != nil {
+				delay := adminGraphQLLimiter.throttleDelay(resp.Extensions.Cost, retryDelay(attempt))
+				if err := sleepWithContext(ctx, delay); err != nil {
 					return err
 				}
 				continue
@@ -872,6 +881,13 @@ func productStatus(isPublished bool) string {
 	return "DRAFT"
 }
 
+func shopifyProductTitle(product model.Product) string {
+	if title := strings.TrimSpace(product.EnglishTitle); title != "" {
+		return title
+	}
+	return strings.TrimSpace(product.HebrewTitle)
+}
+
 func mapShopifyProduct(p dto.ShopifyProduct) model.Product {
 	var sku, barcode string
 	if len(p.Variants.Nodes) > 0 {
@@ -931,28 +947,38 @@ func formatGraphQLErrors(errs []dto.GraphQLError) string {
 }
 
 func (c *Client) UpdateLocalization(ctx context.Context, product model.Product, productGid string) error {
+	productGid = strings.TrimSpace(productGid)
 	if productGid == "" {
 		return nil
 	}
+	hebrewTitle := strings.TrimSpace(product.HebrewTitle)
+	if !shouldUpdateTranslation(shopifyProductTitle(product), hebrewTitle) {
+		return nil
+	}
 
-	translationDigest := c.getProductLocalizationDigest(ctx, productGid)
+	translationDigest, err := c.getProductLocalizationDigest(ctx, productGid)
+	if err != nil {
+		return err
+	}
 
 	if translationDigest == "" {
 		return nil
 	}
 
-	updateLocalization := c.updateProductLocalization(ctx, translationDigest, productGid, product.HebrewTitle)
+	updateLocalization := c.updateProductLocalization(ctx, translationDigest, productGid, hebrewTitle)
 
 	if updateLocalization != nil {
 		c.logError("shopify update localization failed", updateLocalization)
+		return updateLocalization
 	}
 
 	return nil
 }
 
-func (c *Client) getProductLocalizationDigest(ctx context.Context, productGid string) string {
+func (c *Client) getProductLocalizationDigest(ctx context.Context, productGid string) (string, error) {
+	productGid = strings.TrimSpace(productGid)
 	if productGid == "" {
-		return ""
+		return "", nil
 	}
 
 	query := `
@@ -971,20 +997,20 @@ func (c *Client) getProductLocalizationDigest(ctx context.Context, productGid st
 
 	if err != nil {
 		c.logError("shopify get localization digest failed", err)
-		return ""
+		return "", err
 	}
 
 	if result.TranslatableResource == nil {
-		return ""
+		return "", nil
 	}
 
 	for _, v := range result.TranslatableResource.TranslatableContent {
 		if v.Key == "title" && v.Locale == "en" {
-			return v.Digest
+			return v.Digest, nil
 		}
 	}
 
-	return ""
+	return "", nil
 
 }
 

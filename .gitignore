@@ -11,6 +11,10 @@
 
 # Binaries (common names)
 main
+/sync-orders
+/sync-stock-and-price
+/sync-to-shopify
+/wipe-shopify
 bin/
 dist/
 build/
@@ -63,6 +67,7 @@ Thumbs.db
 # ----------------------------
 .env
 .env.*
+!.env.example
 *.local
 *.secret
 *.secrets

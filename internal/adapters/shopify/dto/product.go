@@ -13,8 +13,9 @@ type VariantPayload struct {
 }
 
 type GraphQLResponse[T any] struct {
-	Data   T              `json:"data"`
-	Errors []GraphQLError `json:"errors,omitempty"`
+	Data       T                 `json:"data"`
+	Errors     []GraphQLError    `json:"errors,omitempty"`
+	Extensions GraphQLExtensions `json:"extensions,omitempty"`
 }
 
 type GraphQLError struct {
@@ -22,6 +23,22 @@ type GraphQLError struct {
 	Path       []any                  `json:"path,omitempty"`
 	Extensions map[string]any         `json:"extensions,omitempty"`
 	Locations  []GraphQLErrorLocation `json:"locations,omitempty"`
+}
+
+type GraphQLExtensions struct {
+	Cost GraphQLCost `json:"cost,omitempty"`
+}
+
+type GraphQLCost struct {
+	RequestedQueryCost float64               `json:"requestedQueryCost,omitempty"`
+	ActualQueryCost    float64               `json:"actualQueryCost,omitempty"`
+	ThrottleStatus     GraphQLThrottleStatus `json:"throttleStatus,omitempty"`
+}
+
+type GraphQLThrottleStatus struct {
+	MaximumAvailable   float64 `json:"maximumAvailable,omitempty"`
+	CurrentlyAvailable float64 `json:"currentlyAvailable,omitempty"`
+	RestoreRate        float64 `json:"restoreRate,omitempty"`
 }
 
 type GraphQLErrorLocation struct {

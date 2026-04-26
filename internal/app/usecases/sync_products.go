@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"shopify-exporter/internal/adapters/apix"
 	"shopify-exporter/internal/adapters/shopify"
+	"shopify-exporter/internal/domain/model"
 	"shopify-exporter/internal/logging"
 	"strings"
 	"sync"
@@ -40,6 +41,9 @@ func (c *Client) Run(ctx context.Context) error {
 		createdProducts     atomic.Int64
 		updatedProducts     atomic.Int64
 		localizationUpdates atomic.Int64
+		failedProducts      atomic.Int64
+		skippedEmptySKU     atomic.Int64
+		skippedEmptyTitle   atomic.Int64
 	)
 
 	for page <= totalPages {
@@ -62,22 +66,40 @@ func (c *Client) Run(ctx context.Context) error {
 			go func() {
 				defer wg.Done()
 				defer func() { <-sem }()
-				productTitle := strings.TrimSpace(product.EnglishTitle)
-				if productTitle == "" {
-					productTitle = strings.TrimSpace(product.HebrewTitle)
+				sku := strings.TrimSpace(product.Sku)
+				if sku == "" {
+					skippedEmptySKU.Add(1)
+					c.logger.LogWarning("Product skipped: empty SKU")
+					return
 				}
 
-				productExists, productGid := c.shopifyClient.CheckExistProductBySku(product)
+				productTitle := productSyncTitle(product)
+				if productTitle == "" {
+					skippedEmptyTitle.Add(1)
+					c.logger.LogWarning(fmt.Sprintf("Product skipped: empty title sku=%s", sku))
+					return
+				}
+
+				productExists, productGid, err := c.shopifyClient.CheckExistProductBySku(ctx, product)
+				if err != nil {
+					failedProducts.Add(1)
+					c.logger.LogError(fmt.Sprintf("Product lookup failed sku=%s", sku), err)
+					return
+				}
 
 				if productExists {
 					if err := c.shopifyClient.UpdateProduct(ctx, product, productGid); err == nil {
 						updatedProducts.Add(1)
 						// c.logger.LogSuccess(fmt.Sprintf("Product updated sku=%s title=%s", v.Sku, productTitle))
+					} else {
+						failedProducts.Add(1)
+						c.logger.LogError(fmt.Sprintf("Product update failed sku=%s title=%s", sku, productTitle), err)
 					}
 				} else {
 					createdGid, err := c.shopifyClient.CreateProduct(ctx, product)
 					if err != nil {
-						c.logger.LogError("Error create product", err)
+						failedProducts.Add(1)
+						c.logger.LogError(fmt.Sprintf("Product create failed sku=%s title=%s", sku, productTitle), err)
 					} else {
 						createdProducts.Add(1)
 						// c.logger.LogSuccess(fmt.Sprintf("Product created sku=%s title=%s", v.Sku, productTitle))
@@ -85,9 +107,16 @@ func (c *Client) Run(ctx context.Context) error {
 					productGid = createdGid
 				}
 
+				if strings.TrimSpace(productGid) == "" {
+					return
+				}
+
 				if err := c.shopifyClient.UpdateLocalization(ctx, product, productGid); err == nil {
 					// c.logger.LogSuccess(fmt.Sprintf("Product localization updated sku=%s title=%s", v.Sku, productTitle))
 					localizationUpdates.Add(1)
+				} else {
+					failedProducts.Add(1)
+					c.logger.LogError(fmt.Sprintf("Product localization failed sku=%s title=%s", sku, productTitle), err)
 				}
 			}()
 		}
@@ -96,13 +125,28 @@ func (c *Client) Run(ctx context.Context) error {
 		page++
 	}
 
-	c.logger.LogSuccess(fmt.Sprintf(
-		"Product sync completed pages=%d created=%d updated=%d localization_updates=%d",
+	summary := fmt.Sprintf(
+		"Product sync completed pages=%d created=%d updated=%d localization_updates=%d failed=%d skipped_empty_sku=%d skipped_empty_title=%d",
 		totalPages,
 		createdProducts.Load(),
 		updatedProducts.Load(),
 		localizationUpdates.Load(),
-	))
+		failedProducts.Load(),
+		skippedEmptySKU.Load(),
+		skippedEmptyTitle.Load(),
+	)
+	if failedProducts.Load() > 0 {
+		c.logger.LogWarning(summary)
+	} else {
+		c.logger.LogSuccess(summary)
+	}
 
 	return nil
+}
+
+func productSyncTitle(product model.Product) string {
+	if title := strings.TrimSpace(product.EnglishTitle); title != "" {
+		return title
+	}
+	return strings.TrimSpace(product.HebrewTitle)
 }

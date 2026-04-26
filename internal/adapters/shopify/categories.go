@@ -438,8 +438,14 @@ func (c *ClientShopifyCategoryService) graphqlRequest(ctx context.Context, query
 	}
 
 	for attempt := 0; attempt <= graphqlRetryMax; attempt++ {
+		release, err := adminGraphQLLimiter.begin(ctx)
+		if err != nil {
+			return err
+		}
+
 		raw, err := c.shopifyAPIRequest(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 		if err != nil {
+			release()
 			if attempt < graphqlRetryMax && isRetryableHTTPError(err) {
 				if err := sleepWithContext(ctx, retryDelay(attempt)); err != nil {
 					return err
@@ -452,12 +458,16 @@ func (c *ClientShopifyCategoryService) graphqlRequest(ctx context.Context, query
 
 		var resp dto.GraphQLResponse[json.RawMessage]
 		if err := json.Unmarshal(raw, &resp); err != nil {
+			release()
 			c.logError("shopify graphql response unmarshal failed", err)
 			return err
 		}
+		adminGraphQLLimiter.observe(resp.Extensions.Cost)
+		release()
 		if len(resp.Errors) > 0 {
 			if isThrottleGraphQLError(resp.Errors) && attempt < graphqlRetryMax {
-				if err := sleepWithContext(ctx, retryDelay(attempt)); err != nil {
+				delay := adminGraphQLLimiter.throttleDelay(resp.Extensions.Cost, retryDelay(attempt))
+				if err := sleepWithContext(ctx, delay); err != nil {
 					return err
 				}
 				continue

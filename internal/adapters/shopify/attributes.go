@@ -202,12 +202,7 @@ func (c *Client) EnsureProductMetafieldDefinitions(ctx context.Context, definiti
 
 		createdCount := 0
 		for key, definition := range definitionMap {
-			if node, ok := existingMap[strings.ToLower(key)]; ok {
-				if shouldUpdateTranslation(definition.NameEnglish, definition.NameHebrew) {
-					if err := c.updateTranslation(ctx, node.ID, "name", definition.NameHebrew); err != nil {
-						c.logError("shopify metafield definition translation update failed", err)
-					}
-				}
+			if _, ok := existingMap[strings.ToLower(key)]; ok {
 				continue
 			}
 
@@ -217,11 +212,6 @@ func (c *Client) EnsureProductMetafieldDefinitions(ctx context.Context, definiti
 			}
 			if created != nil {
 				createdCount++
-				if shouldUpdateTranslation(definition.NameEnglish, definition.NameHebrew) {
-					if err := c.updateTranslation(ctx, created.ID, "name", definition.NameHebrew); err != nil {
-						c.logError("shopify metafield definition translation update failed", err)
-					}
-				}
 			}
 		}
 		if c.logger != nil {
