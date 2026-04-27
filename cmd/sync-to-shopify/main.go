@@ -62,7 +62,7 @@ func main() {
 			return fmt.Errorf("shopify price service unavailable")
 		}
 		apixPriceClient := apix.NewPriceSerivce(cfg.ApiHasav, httpClient, logger)
-		return usecases.NewSyncPrices(apixPriceClient, priceClient, logger).Run(ctx)
+		return usecases.NewSyncPrices(apixPriceClient, apixClient, priceClient, logger).Run(ctx)
 	})
 
 	runStepIfEnabled(logger, "syncStocks", func() error {

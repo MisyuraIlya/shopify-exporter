@@ -38,11 +38,13 @@ type PriceService interface {
 }
 
 type PriceUpsertInput struct {
-	SKU       string
-	ProductID string
-	VariantID string
-	USDPrice  float64
-	ILSPrice  float64
+	SKU          string
+	ProductID    string
+	VariantID    string
+	USDPrice     float64
+	ILSPrice     float64
+	USDCompareAt float64
+	ILSCompareAt float64
 }
 
 type IsraelMarketResources struct {
@@ -882,6 +884,25 @@ func (c *Client) ensureCatalogPublicationAndPriceList(ctx context.Context, catal
 	}
 
 	if priceList.ID == "" || !strings.EqualFold(strings.TrimSpace(priceList.Currency), strings.TrimSpace(currencyCode)) {
+		fallback, err := c.findPriceListByCatalog(ctx, catalogID, priceListName, currencyCode)
+		if err != nil {
+			return dto.PublicationNode{}, dto.PriceListNode{}, err
+		}
+		if fallback.ID != "" {
+			priceList = fallback
+			c.logSuccess(fmt.Sprintf("shopify price list located via fallback id=%s name=%s currency=%s", priceList.ID, priceList.Name, priceList.Currency))
+		}
+	}
+
+	if priceList.ID != "" && !strings.EqualFold(strings.TrimSpace(priceList.Currency), strings.TrimSpace(currencyCode)) {
+		c.logWarning(fmt.Sprintf("shopify deleting price list with wrong currency id=%s have=%q want=%s", priceList.ID, priceList.Currency, currencyCode))
+		if err := c.deletePriceList(ctx, priceList.ID); err != nil {
+			return dto.PublicationNode{}, dto.PriceListNode{}, err
+		}
+		priceList = dto.PriceListNode{}
+	}
+
+	if priceList.ID == "" {
 		priceList, err = c.createPriceList(ctx, catalogID, priceListName, currencyCode)
 		if err != nil {
 			return dto.PublicationNode{}, dto.PriceListNode{}, err
@@ -889,6 +910,116 @@ func (c *Client) ensureCatalogPublicationAndPriceList(ctx context.Context, catal
 	}
 
 	return publication, priceList, nil
+}
+
+func (c *Client) deletePriceList(ctx context.Context, priceListID string) error {
+	priceListID = strings.TrimSpace(priceListID)
+	if priceListID == "" {
+		return errors.New("shopify price list id is required")
+	}
+	query := `
+	mutation priceListDelete($id: ID!) {
+		priceListDelete(id: $id) {
+			deletedId
+			userErrors { field message }
+		}
+	}`
+	var data struct {
+		PriceListDelete struct {
+			DeletedID  string                 `json:"deletedId,omitempty"`
+			UserErrors []dto.ShopifyUserError `json:"userErrors,omitempty"`
+		} `json:"priceListDelete"`
+	}
+	if err := c.graphqlRequest(ctx, query, map[string]any{"id": priceListID}, &data); err != nil {
+		return err
+	}
+	if err := userErrorsToDetailedError("priceListDelete", data.PriceListDelete.UserErrors); err != nil {
+		return err
+	}
+	c.logSuccess(fmt.Sprintf("shopify price list deleted id=%s", priceListID))
+	return nil
+}
+
+func (c *Client) findPriceListByCatalog(ctx context.Context, catalogID string, priceListName string, currencyCode string) (dto.PriceListNode, error) {
+	catalogID = strings.TrimSpace(catalogID)
+	if catalogID == "" {
+		return dto.PriceListNode{}, errors.New("shopify catalog id is required")
+	}
+	priceListName = strings.TrimSpace(priceListName)
+	currencyCode = strings.TrimSpace(currencyCode)
+
+	query := `
+	query priceLists($first: Int!, $after: String) {
+		priceLists(first: $first, after: $after) {
+			nodes { id name currency catalog { id } }
+			pageInfo { hasNextPage endCursor }
+		}
+	}`
+
+	type priceListWithCatalog struct {
+		ID       string `json:"id,omitempty"`
+		Name     string `json:"name,omitempty"`
+		Currency string `json:"currency,omitempty"`
+		Catalog  *struct {
+			ID string `json:"id,omitempty"`
+		} `json:"catalog,omitempty"`
+	}
+	type queryData struct {
+		PriceLists struct {
+			Nodes    []priceListWithCatalog `json:"nodes,omitempty"`
+			PageInfo dto.ShopifyPageInfo    `json:"pageInfo,omitempty"`
+		} `json:"priceLists"`
+	}
+
+	var nameMatch dto.PriceListNode
+	var currencyMatch dto.PriceListNode
+	totalSeen := 0
+	after := ""
+	for {
+		variables := map[string]any{"first": 50}
+		if after != "" {
+			variables["after"] = after
+		}
+		var data queryData
+		if err := c.graphqlRequest(ctx, query, variables, &data); err != nil {
+			return dto.PriceListNode{}, err
+		}
+		for _, node := range data.PriceLists.Nodes {
+			totalSeen++
+			candidate := dto.PriceListNode{
+				ID:       strings.TrimSpace(node.ID),
+				Name:     strings.TrimSpace(node.Name),
+				Currency: strings.TrimSpace(node.Currency),
+			}
+			catalogIDFound := ""
+			if node.Catalog != nil {
+				catalogIDFound = strings.TrimSpace(node.Catalog.ID)
+			}
+			if catalogIDFound != "" && strings.EqualFold(catalogIDFound, catalogID) {
+				return candidate, nil
+			}
+			if nameMatch.ID == "" && priceListName != "" && strings.EqualFold(candidate.Name, priceListName) {
+				if currencyCode == "" || strings.EqualFold(candidate.Currency, currencyCode) {
+					nameMatch = candidate
+				}
+			}
+			if currencyMatch.ID == "" && currencyCode != "" && strings.EqualFold(candidate.Currency, currencyCode) && catalogIDFound == "" {
+				currencyMatch = candidate
+			}
+		}
+		if !data.PriceLists.PageInfo.HasNextPage {
+			break
+		}
+		after = strings.TrimSpace(data.PriceLists.PageInfo.EndCursor)
+		if after == "" {
+			break
+		}
+	}
+	c.logSuccess(fmt.Sprintf("shopify price list scan complete catalog=%s seen=%d name_match=%t currency_match=%t", catalogID, totalSeen, nameMatch.ID != "", currencyMatch.ID != ""))
+	if nameMatch.ID != "" {
+		return nameMatch, nil
+	}
+	return currencyMatch, nil
 }
 
 func (c *Client) createCatalogPublication(ctx context.Context, catalogID string) (dto.PublicationNode, error) {
@@ -1027,16 +1158,21 @@ type marketInfo struct {
 }
 
 type resolvedPriceInput struct {
-	SKU       string
-	ProductID string
-	VariantID string
-	USDPrice  float64
-	ILSPrice  float64
+	SKU          string
+	ProductID    string
+	VariantID    string
+	USDPrice     float64
+	ILSPrice     float64
+	USDCompareAt float64
+	ILSCompareAt float64
 }
 
 func validatePriceInput(input PriceUpsertInput) error {
 	if input.USDPrice < 0 || input.ILSPrice < 0 {
 		return errors.New("shopify price must be non-negative")
+	}
+	if input.USDCompareAt < 0 || input.ILSCompareAt < 0 {
+		return errors.New("shopify compareAt price must be non-negative")
 	}
 	if input.VariantID == "" && strings.TrimSpace(input.SKU) == "" {
 		return errors.New("shopify price requires sku or variant id")
@@ -1046,11 +1182,13 @@ func validatePriceInput(input PriceUpsertInput) error {
 
 func (c *Client) resolvePriceInput(ctx context.Context, input PriceUpsertInput) (resolvedPriceInput, error) {
 	resolved := resolvedPriceInput{
-		SKU:       strings.TrimSpace(input.SKU),
-		ProductID: strings.TrimSpace(input.ProductID),
-		VariantID: strings.TrimSpace(input.VariantID),
-		USDPrice:  input.USDPrice,
-		ILSPrice:  input.ILSPrice,
+		SKU:          strings.TrimSpace(input.SKU),
+		ProductID:    strings.TrimSpace(input.ProductID),
+		VariantID:    strings.TrimSpace(input.VariantID),
+		USDPrice:     input.USDPrice,
+		ILSPrice:     input.ILSPrice,
+		USDCompareAt: input.USDCompareAt,
+		ILSCompareAt: input.ILSCompareAt,
 	}
 
 	if resolved.VariantID == "" {
@@ -1235,18 +1373,24 @@ func (c *Client) updateBasePrices(ctx context.Context, inputs []resolvedPriceInp
 				if err != nil {
 					return err
 				}
+				compareAtAmount := compareAtForCurrency(item, currencyCode)
 				c.traceSKU(
 					item.SKU,
-					"price base mutation product_id=%s variant_id=%s currency=%s amount=%s",
+					"price base mutation product_id=%s variant_id=%s currency=%s amount=%s compare_at=%s",
 					productID,
 					item.VariantID,
 					strings.ToUpper(strings.TrimSpace(currencyCode)),
 					formatMoneyAmount(priceAmount),
+					formatMoneyAmount(compareAtAmount),
 				)
-				variants = append(variants, map[string]any{
+				variant := map[string]any{
 					"id":    item.VariantID,
 					"price": formatMoneyAmount(priceAmount),
-				})
+				}
+				if compareAtAmount > priceAmount {
+					variant["compareAtPrice"] = formatMoneyAmount(compareAtAmount)
+				}
+				variants = append(variants, variant)
 			}
 			var data productVariantsBulkUpdateData
 			err := c.graphqlRequest(ctx, query, map[string]any{
@@ -1307,21 +1451,30 @@ func (c *Client) addFixedPrices(ctx context.Context, priceListID string, inputs 
 			if err != nil {
 				return err
 			}
+			compareAtAmount := compareAtForCurrency(item, currencyCode)
 			c.traceSKU(
 				item.SKU,
-				"price fixed mutation price_list_id=%s variant_id=%s currency=%s amount=%s",
+				"price fixed mutation price_list_id=%s variant_id=%s currency=%s amount=%s compare_at=%s",
 				priceListID,
 				item.VariantID,
 				strings.ToUpper(strings.TrimSpace(currencyCode)),
 				formatMoneyAmount(priceAmount),
+				formatMoneyAmount(compareAtAmount),
 			)
-			prices = append(prices, map[string]any{
+			entry := map[string]any{
 				"variantId": item.VariantID,
 				"price": map[string]any{
 					"amount":       formatMoneyAmount(priceAmount),
 					"currencyCode": currencyCode,
 				},
-			})
+			}
+			if compareAtAmount > priceAmount {
+				entry["compareAtPrice"] = map[string]any{
+					"amount":       formatMoneyAmount(compareAtAmount),
+					"currencyCode": currencyCode,
+				}
+			}
+			prices = append(prices, entry)
 		}
 		var data dto.PriceListFixedPricesAddData
 		err := c.graphqlRequest(ctx, query, map[string]any{
@@ -1357,6 +1510,17 @@ func priceForCurrency(item resolvedPriceInput, currencyCode string) (float64, er
 		return item.ILSPrice, nil
 	default:
 		return 0, fmt.Errorf("shopify unsupported currency %q for pricing", currencyCode)
+	}
+}
+
+func compareAtForCurrency(item resolvedPriceInput, currencyCode string) float64 {
+	switch strings.ToUpper(strings.TrimSpace(currencyCode)) {
+	case currencyUSD:
+		return item.USDCompareAt
+	case currencyILS:
+		return item.ILSCompareAt
+	default:
+		return 0
 	}
 }
 

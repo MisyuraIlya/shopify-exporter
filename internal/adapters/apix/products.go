@@ -94,5 +94,6 @@ func mapProduct(dto dto.ProductDto) model.Product {
 		EnglishTitle: dto.ForignName,
 		IsPublished:  dto.Status,
 		Barcode:      dto.BarCode,
+		DiscountCode: dto.DiscountCode,
 	}
 }

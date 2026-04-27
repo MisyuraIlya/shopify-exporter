@@ -15,22 +15,45 @@ type SyncPricesService interface {
 }
 
 type ClientPrice struct {
-	apixClient    apix.PriceService
-	shopifyClient shopify.PriceService
-	logger        logging.LoggerService
+	apixClient     apix.PriceService
+	apixProducts   apix.NewClientService
+	shopifyClient  shopify.PriceService
+	logger         logging.LoggerService
 }
 
-func NewSyncPrices(apixClient apix.PriceService, shopifyClient shopify.PriceService, logger logging.LoggerService) SyncPricesService {
+const (
+	discountCode50Pct       = "5"
+	discountProductPageSize = 100
+)
+
+func NewSyncPrices(apixClient apix.PriceService, apixProducts apix.NewClientService, shopifyClient shopify.PriceService, logger logging.LoggerService) SyncPricesService {
 	return &ClientPrice{
 		apixClient:    apixClient,
+		apixProducts:  apixProducts,
 		shopifyClient: shopifyClient,
 		logger:        logger,
 	}
 }
 
+func discountFraction(code string) float64 {
+	switch strings.TrimSpace(code) {
+	case discountCode50Pct:
+		return 0.5
+	}
+	return 0
+}
+
 func (c *ClientPrice) Run(ctx context.Context) error {
 	if c.logger != nil {
 		c.logger.Log("Price sync started")
+	}
+
+	discountByCode, err := c.fetchDiscountCodes(ctx)
+	if err != nil {
+		if c.logger != nil {
+			c.logger.LogError("Error fetch api products for discounts", err)
+		}
+		return err
 	}
 
 	prices, err := c.apixClient.PriceList(ctx)
@@ -118,11 +141,30 @@ func (c *ClientPrice) Run(ctx context.Context) error {
 				entry.ILS,
 			))
 		}
-		inputs = append(inputs, shopify.PriceUpsertInput{
+		input := shopify.PriceUpsertInput{
 			SKU:      entry.SkuTrim,
 			USDPrice: entry.USD,
 			ILSPrice: entry.ILS,
-		})
+		}
+		if frac := discountFraction(discountByCode[entry.SkuTrim]); frac > 0 {
+			input.USDCompareAt = entry.USD
+			input.ILSCompareAt = entry.ILS
+			input.USDPrice = entry.USD * (1 - frac)
+			input.ILSPrice = entry.ILS * (1 - frac)
+			if c.logger != nil && debugsync.MatchSKU(entry.SkuTrim) {
+				c.logger.Log(fmt.Sprintf(
+					"trace price discount sku=%s code=%s fraction=%.2f usd_price=%.2f usd_compare_at=%.2f ils_price=%.2f ils_compare_at=%.2f",
+					entry.SkuTrim,
+					discountByCode[entry.SkuTrim],
+					frac,
+					input.USDPrice,
+					input.USDCompareAt,
+					input.ILSPrice,
+					input.ILSCompareAt,
+				))
+			}
+		}
+		inputs = append(inputs, input)
 	}
 
 	if len(inputs) == 0 {
@@ -156,4 +198,33 @@ func (c *ClientPrice) Run(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (c *ClientPrice) fetchDiscountCodes(ctx context.Context) (map[string]string, error) {
+	codes := make(map[string]string)
+	if c.apixProducts == nil {
+		return codes, nil
+	}
+
+	page := 1
+	totalPages := 1
+	for page <= totalPages {
+		products, pageTotal, err := c.apixProducts.ListProducts(ctx, page, discountProductPageSize)
+		if err != nil {
+			return nil, err
+		}
+		if pageTotal > 0 {
+			totalPages = pageTotal
+		}
+		for _, p := range products {
+			sku := strings.TrimSpace(p.Sku)
+			code := strings.TrimSpace(p.DiscountCode)
+			if sku == "" || code == "" {
+				continue
+			}
+			codes[sku] = code
+		}
+		page++
+	}
+	return codes, nil
 }

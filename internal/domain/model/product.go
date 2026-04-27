@@ -7,4 +7,5 @@ type Product struct {
 	Description  string
 	IsPublished  bool
 	Barcode      string
+	DiscountCode string
 }
