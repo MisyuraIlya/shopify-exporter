@@ -100,9 +100,10 @@ func (c *NewPriceService) PriceList(ctx context.Context) ([]model.Price, error) 
 
 func mapPrice(dto dto.PriceDto) model.Price {
 	return model.Price{
-		Sku:      dto.ItemKey,
-		Currency: normalizeCurrencyCode(dto.CurrencyCode),
-		Price:    dto.Price,
+		Sku:             dto.ItemKey,
+		Currency:        normalizeCurrencyCode(dto.CurrencyCode),
+		Price:           dto.Price,
+		PriceListNumber: dto.PriceListNumber,
 	}
 }
 

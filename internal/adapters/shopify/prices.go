@@ -1389,6 +1389,8 @@ func (c *Client) updateBasePrices(ctx context.Context, inputs []resolvedPriceInp
 				}
 				if compareAtAmount > priceAmount {
 					variant["compareAtPrice"] = formatMoneyAmount(compareAtAmount)
+				} else {
+					variant["compareAtPrice"] = nil
 				}
 				variants = append(variants, variant)
 			}

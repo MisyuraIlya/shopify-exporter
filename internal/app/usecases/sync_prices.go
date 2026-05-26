@@ -24,6 +24,11 @@ type ClientPrice struct {
 const (
 	discountCode50Pct       = "5"
 	discountProductPageSize = 100
+
+	// preferredUSDPriceList is the ERP price list number used for B2C USD prices.
+	preferredUSDPriceList = 7
+	// preferredILSPriceList is the ERP price list number used for ILS prices.
+	preferredILSPriceList = 10
 )
 
 func NewSyncPrices(apixClient apix.PriceService, apixProducts apix.NewClientService, shopifyClient shopify.PriceService, logger logging.LoggerService) SyncPricesService {
@@ -65,11 +70,13 @@ func (c *ClientPrice) Run(ctx context.Context) error {
 	}
 
 	type skuPrices struct {
-		USD     float64
-		ILS     float64
-		HasUSD  bool
-		HasILS  bool
-		SkuTrim string
+		USD       float64
+		ILS       float64
+		HasUSD    bool
+		HasILS    bool
+		SkuTrim   string
+		USDFromPL int
+		ILSFromPL int
 	}
 
 	priceMap := make(map[string]*skuPrices)
@@ -90,29 +97,37 @@ func (c *ClientPrice) Run(ctx context.Context) error {
 		}
 		switch strings.ToUpper(strings.TrimSpace(price.Currency)) {
 		case "USD":
+			accept := !entry.HasUSD || (entry.USDFromPL != preferredUSDPriceList && price.PriceListNumber == preferredUSDPriceList)
 			if c.logger != nil && debugsync.MatchSKU(sku) {
 				c.logger.Log(fmt.Sprintf(
-					"trace price candidate sku=%s currency=USD selected=%.2f overwrite=%t previous=%.2f",
+					"trace price candidate sku=%s currency=USD price=%.2f price_list=%d accepted=%t",
 					sku,
 					float64(price.Price),
-					entry.HasUSD,
-					entry.USD,
+					price.PriceListNumber,
+					accept,
 				))
 			}
-			entry.USD = float64(price.Price)
-			entry.HasUSD = true
+			if accept {
+				entry.USD = float64(price.Price)
+				entry.HasUSD = true
+				entry.USDFromPL = price.PriceListNumber
+			}
 		case "ILS":
+			accept := !entry.HasILS || (entry.ILSFromPL != preferredILSPriceList && price.PriceListNumber == preferredILSPriceList)
 			if c.logger != nil && debugsync.MatchSKU(sku) {
 				c.logger.Log(fmt.Sprintf(
-					"trace price candidate sku=%s currency=ILS selected=%.2f overwrite=%t previous=%.2f",
+					"trace price candidate sku=%s currency=ILS price=%.2f price_list=%d accepted=%t",
 					sku,
 					float64(price.Price),
-					entry.HasILS,
-					entry.ILS,
+					price.PriceListNumber,
+					accept,
 				))
 			}
-			entry.ILS = float64(price.Price)
-			entry.HasILS = true
+			if accept {
+				entry.ILS = float64(price.Price)
+				entry.HasILS = true
+				entry.ILSFromPL = price.PriceListNumber
+			}
 		}
 	}
 
@@ -135,10 +150,12 @@ func (c *ClientPrice) Run(ctx context.Context) error {
 		}
 		if c.logger != nil && debugsync.MatchSKU(entry.SkuTrim) {
 			c.logger.Log(fmt.Sprintf(
-				"trace price prepared sku=%s usd=%.2f ils=%.2f",
+				"trace price prepared sku=%s usd=%.2f usd_pl=%d ils=%.2f ils_pl=%d",
 				entry.SkuTrim,
 				entry.USD,
+				entry.USDFromPL,
 				entry.ILS,
+				entry.ILSFromPL,
 			))
 		}
 		input := shopify.PriceUpsertInput{

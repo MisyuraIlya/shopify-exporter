@@ -147,6 +147,23 @@ func (c *ClientCategory) Run(ctx context.Context) error {
 		attachWG.Wait()
 	}
 
+	// Ensure static collections that are not managed by the ERP always exist in Shopify.
+	staticCategories := []model.Category{
+		{TitlteEnglish: "Best Sellers", TitleHebrew: "נמכרים ביותר"},
+		{TitlteEnglish: "Personal Dedications", TitleHebrew: "הקדשות אישיות"},
+		{TitlteEnglish: "sale", TitleHebrew: "sale"},
+	}
+	for _, cat := range staticCategories {
+		exists, err := c.shopifyClient.CheckCategoryExist(ctx, cat)
+		if err != nil {
+			c.logger.LogError("Error checking static category", err)
+			continue
+		}
+		if !exists {
+			c.shopifyClient.CreateCategory(ctx, cat)
+		}
+	}
+
 	c.logger.LogSuccess(fmt.Sprintf(
 		"Category sync completed products=%d categories=%d unique=%d created=%d updated=%d skipped_empty=%d",
 		len(caetgories),
