@@ -89,7 +89,6 @@ func (c *ClientCategory) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	errCh := make(chan error, 1)
 	sem := make(chan struct{}, maxCategoryConcurrent)
 	var wg sync.WaitGroup
 	for _, category := range uniqueCategories {
@@ -104,12 +103,10 @@ func (c *ClientCategory) Run(ctx context.Context) error {
 			}
 			existCategory, err := c.shopifyClient.CheckCategoryExist(ctx, category)
 			if err != nil {
-				c.logger.LogError("Error category exists", err)
-				select {
-				case errCh <- err:
-					cancel()
-				default:
-				}
+				// Skip only this category. A single lookup failure must not
+				// abort the whole sync (remaining creates, static collections,
+				// and product attachment must still run).
+				c.logger.LogError("Error category exists, skipping category", err)
 				return
 			}
 			if existCategory {
@@ -122,11 +119,6 @@ func (c *ClientCategory) Run(ctx context.Context) error {
 		}()
 	}
 	wg.Wait()
-	select {
-	case err := <-errCh:
-		return err
-	default:
-	}
 
 	if len(productsWithSKU) > 0 {
 		attachSem := make(chan struct{}, maxAttachConcurrent)
