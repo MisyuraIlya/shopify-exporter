@@ -159,7 +159,9 @@ func (c *ClientCategory) Run(ctx context.Context) error {
 			c.logger.LogError("Error checking static category", err)
 			continue
 		}
-		if !exists {
+		if exists {
+			c.shopifyClient.UpdateCategory(ctx, cat)
+		} else {
 			c.shopifyClient.CreateCategory(ctx, cat)
 		}
 	}

@@ -551,7 +551,41 @@ func (c *Client) findInternationalMarket(ctx context.Context) (marketInfo, error
 	if strings.TrimSpace(handle) == "" && strings.TrimSpace(name) == "" {
 		return marketInfo{}, errors.New("shopify international market handle or name is required")
 	}
-	return c.findMarketByHandleOrName(ctx, handle, name)
+	market, err := c.findMarketByHandleOrName(ctx, handle, name)
+	if err != nil {
+		return marketInfo{}, err
+	}
+	if market.ID != "" {
+		return market, nil
+	}
+	// Fallback: any non-Israel market with USD base currency.
+	// Handles stores where the primary market has a different handle/name than configured.
+	return c.findUSDMarketFallback(ctx)
+}
+
+func (c *Client) findUSDMarketFallback(ctx context.Context) (marketInfo, error) {
+	markets, err := c.listMarkets(ctx)
+	if err != nil {
+		return marketInfo{}, err
+	}
+	for _, market := range markets {
+		if marketHasCountry(market, marketRegionIL) {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(market.CurrencySettings.BaseCurrency.CurrencyCode), currencyUSD) {
+			continue
+		}
+		c.logWarning(fmt.Sprintf("shopify intl market fallback: using id=%s handle=%s name=%s", market.ID, market.Handle, market.Name))
+		return marketInfo{
+			ID:              strings.TrimSpace(market.ID),
+			Name:            strings.TrimSpace(market.Name),
+			Handle:          strings.TrimSpace(market.Handle),
+			Enabled:         market.Enabled,
+			CurrencyCode:    strings.TrimSpace(market.CurrencySettings.BaseCurrency.CurrencyCode),
+			LocalCurrencies: market.CurrencySettings.LocalCurrencies,
+		}, nil
+	}
+	return marketInfo{}, nil
 }
 
 func (c *Client) findMarketByHandleOrName(ctx context.Context, handle string, name string) (marketInfo, error) {
