@@ -217,11 +217,10 @@ func (c *Client) UpsertPricesBatch(ctx context.Context, inputs []PriceUpsertInpu
 		return err
 	}
 
-	if baseCurrency == currencyILS {
-		internationalResources, err := c.ensureInternationalMarketAndCatalog(ctx)
-		if err != nil {
-			return err
-		}
+	internationalResources, intErr := c.ensureInternationalMarketAndCatalog(ctx)
+	if intErr != nil {
+		c.logWarning(fmt.Sprintf("shopify international catalog unavailable, USD fixed prices skipped: %v", intErr))
+	} else if internationalResources.PriceListID != "" {
 		if err := c.addFixedPrices(ctx, internationalResources.PriceListID, resolved, currencyUSD); err != nil {
 			return err
 		}
