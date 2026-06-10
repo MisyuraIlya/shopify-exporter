@@ -2,7 +2,6 @@ package shopify
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -28,7 +27,9 @@ const (
 	usdMetafieldNamespace = "custom"
 	usdMetafieldKey       = "usd_price"
 	usdMetafieldName      = "USD price"
-	usdMetafieldType      = "money"
+	// number_decimal (not money): a money metafield is validated against the shop
+	// currency (ILS) and rejects a USD value. The storefront prepends the $ itself.
+	usdMetafieldType = "number_decimal"
 
 	marketRegionIL         = "IL"
 	maxFixedPriceBatchSize = 250
@@ -1542,8 +1543,10 @@ func (c *Client) addFixedPrices(ctx context.Context, priceListID string, inputs 
 	return nil
 }
 
-// ensureUSDPriceMetafieldDefinition creates the custom.usd_price (money, PRODUCT)
-// metafield definition once per process if it does not already exist.
+// ensureUSDPriceMetafieldDefinition makes sure the custom.usd_price PRODUCT metafield
+// definition exists with the expected type (number_decimal), once per process. If a
+// definition with the same key exists but with a different type (e.g. a stale "money"
+// definition), it is deleted and recreated so the value write does not fail.
 func (c *Client) ensureUSDPriceMetafieldDefinition(ctx context.Context) error {
 	c.usdMetaMu.Lock()
 	ready := c.usdMetaReady
@@ -1552,14 +1555,21 @@ func (c *Client) ensureUSDPriceMetafieldDefinition(ctx context.Context) error {
 		return nil
 	}
 
-	definitions, err := c.listProductMetafieldDefinitions(ctx, usdMetafieldNamespace)
+	existingID, existingType, err := c.findUSDPriceMetafieldDefinition(ctx)
 	if err != nil {
 		return err
 	}
-	for _, definition := range definitions {
-		if strings.EqualFold(strings.TrimSpace(definition.Key), usdMetafieldKey) {
+	if existingID != "" {
+		if strings.EqualFold(strings.TrimSpace(existingType), usdMetafieldType) {
 			c.markUSDMetaReady()
 			return nil
+		}
+		c.logWarning(fmt.Sprintf(
+			"shopify usd metafield definition type mismatch id=%s have=%q want=%s, recreating",
+			existingID, existingType, usdMetafieldType,
+		))
+		if err := c.deleteMetafieldDefinition(ctx, existingID); err != nil {
+			return err
 		}
 	}
 
@@ -1591,6 +1601,68 @@ func (c *Client) ensureUSDPriceMetafieldDefinition(ctx context.Context) error {
 	}
 	c.markUSDMetaReady()
 	return nil
+}
+
+// findUSDPriceMetafieldDefinition returns the id and type name of the existing
+// custom.usd_price PRODUCT metafield definition, or empty strings if none exists.
+func (c *Client) findUSDPriceMetafieldDefinition(ctx context.Context) (string, string, error) {
+	query := `
+	query usdPriceDefinition($namespace: String!, $ownerType: MetafieldOwnerType!) {
+		metafieldDefinitions(first: 25, namespace: $namespace, ownerType: $ownerType) {
+			nodes { id key type { name } }
+		}
+	}`
+	var data struct {
+		MetafieldDefinitions struct {
+			Nodes []struct {
+				ID   string `json:"id,omitempty"`
+				Key  string `json:"key,omitempty"`
+				Type struct {
+					Name string `json:"name,omitempty"`
+				} `json:"type,omitempty"`
+			} `json:"nodes,omitempty"`
+		} `json:"metafieldDefinitions"`
+	}
+	if err := c.graphqlRequest(ctx, query, map[string]any{
+		"namespace": usdMetafieldNamespace,
+		"ownerType": metafieldOwnerProduct,
+	}, &data); err != nil {
+		return "", "", err
+	}
+	for _, node := range data.MetafieldDefinitions.Nodes {
+		if strings.EqualFold(strings.TrimSpace(node.Key), usdMetafieldKey) {
+			return strings.TrimSpace(node.ID), strings.TrimSpace(node.Type.Name), nil
+		}
+	}
+	return "", "", nil
+}
+
+// deleteMetafieldDefinition removes a metafield definition and any associated metafields.
+func (c *Client) deleteMetafieldDefinition(ctx context.Context, definitionID string) error {
+	definitionID = strings.TrimSpace(definitionID)
+	if definitionID == "" {
+		return errors.New("shopify metafield definition id is required")
+	}
+	query := `
+	mutation metafieldDefinitionDelete($id: ID!, $deleteAllAssociatedMetafields: Boolean) {
+		metafieldDefinitionDelete(id: $id, deleteAllAssociatedMetafields: $deleteAllAssociatedMetafields) {
+			deletedDefinitionId
+			userErrors { field message }
+		}
+	}`
+	var resp struct {
+		MetafieldDefinitionDelete struct {
+			DeletedDefinitionID string                 `json:"deletedDefinitionId,omitempty"`
+			UserErrors          []dto.ShopifyUserError `json:"userErrors,omitempty"`
+		} `json:"metafieldDefinitionDelete"`
+	}
+	if err := c.graphqlRequest(ctx, query, map[string]any{
+		"id":                            definitionID,
+		"deleteAllAssociatedMetafields": true,
+	}, &resp); err != nil {
+		return err
+	}
+	return userErrorsToError("metafieldDefinitionDelete", resp.MetafieldDefinitionDelete.UserErrors)
 }
 
 func (c *Client) markUSDMetaReady() {
@@ -1653,24 +1725,18 @@ func (c *Client) addUSDPriceMetafields(ctx context.Context, inputs []resolvedPri
 		metafields := make([]map[string]any, 0, len(batch))
 		for _, productID := range batch {
 			item := byProduct[productID]
-			valueBytes, err := json.Marshal(map[string]string{
-				"amount":        formatMoneyAmount(item.USDPrice),
-				"currency_code": currencyUSD,
-			})
-			if err != nil {
-				return fmt.Errorf("marshal usd money metafield: %w", err)
-			}
+			value := formatMoneyAmount(item.USDPrice)
 			c.traceSKU(
 				item.SKU,
 				"usd metafield product_id=%s namespace=%s key=%s value=%s",
-				productID, usdMetafieldNamespace, usdMetafieldKey, string(valueBytes),
+				productID, usdMetafieldNamespace, usdMetafieldKey, value,
 			)
 			metafields = append(metafields, map[string]any{
 				"ownerId":   productID,
 				"namespace": usdMetafieldNamespace,
 				"key":       usdMetafieldKey,
 				"type":      usdMetafieldType,
-				"value":     string(valueBytes),
+				"value":     value,
 			})
 		}
 		var data metafieldsSetRelatedData
