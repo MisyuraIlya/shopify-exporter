@@ -2,6 +2,7 @@ package shopify
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -23,6 +24,11 @@ const (
 	defaultInternationalMarketName    = "International"
 	defaultInternationalCatalogTitle  = "International Catalog"
 	defaultInternationalPriceListName = "International USD"
+
+	usdMetafieldNamespace = "custom"
+	usdMetafieldKey       = "usd_price"
+	usdMetafieldName      = "USD price"
+	usdMetafieldType      = "money"
 
 	marketRegionIL         = "IL"
 	maxFixedPriceBatchSize = 250
@@ -217,13 +223,12 @@ func (c *Client) UpsertPricesBatch(ctx context.Context, inputs []PriceUpsertInpu
 		return err
 	}
 
-	internationalResources, intErr := c.ensureInternationalMarketAndCatalog(ctx)
-	if intErr != nil {
-		c.logWarning(fmt.Sprintf("shopify international catalog unavailable, USD fixed prices skipped: %v", intErr))
-	} else if internationalResources.PriceListID != "" {
-		if err := c.addFixedPrices(ctx, internationalResources.PriceListID, resolved, currencyUSD); err != nil {
-			return err
-		}
+	// USD is served via a product metafield (custom.usd_price) read by the storefront,
+	// not via a Shopify multi-currency price list — the single-currency Israeli payment
+	// gateway blocks setting the International market to USD. See
+	// .claude/PRICE_ISSUE_KNOWN_ROOT_CAUSE.md. A failure here is surfaced, not swallowed.
+	if err := c.addUSDPriceMetafields(ctx, resolved); err != nil {
+		return err
 	}
 
 	c.logSuccess(fmt.Sprintf("shopify prices updated variants=%d skipped_missing=%d", len(resolved), skippedMissing))
@@ -1534,6 +1539,150 @@ func (c *Client) addFixedPrices(ctx context.Context, priceListID string, inputs 
 		}
 	}
 
+	return nil
+}
+
+// ensureUSDPriceMetafieldDefinition creates the custom.usd_price (money, PRODUCT)
+// metafield definition once per process if it does not already exist.
+func (c *Client) ensureUSDPriceMetafieldDefinition(ctx context.Context) error {
+	c.usdMetaMu.Lock()
+	ready := c.usdMetaReady
+	c.usdMetaMu.Unlock()
+	if ready {
+		return nil
+	}
+
+	definitions, err := c.listProductMetafieldDefinitions(ctx, usdMetafieldNamespace)
+	if err != nil {
+		return err
+	}
+	for _, definition := range definitions {
+		if strings.EqualFold(strings.TrimSpace(definition.Key), usdMetafieldKey) {
+			c.markUSDMetaReady()
+			return nil
+		}
+	}
+
+	query := `
+	mutation metafieldDefinitionCreate($definition: MetafieldDefinitionInput!) {
+		metafieldDefinitionCreate(definition: $definition) {
+			userErrors { field message }
+		}
+	}`
+	payload := map[string]any{
+		"definition": map[string]any{
+			"name":      usdMetafieldName,
+			"namespace": usdMetafieldNamespace,
+			"key":       usdMetafieldKey,
+			"type":      usdMetafieldType,
+			"ownerType": metafieldOwnerProduct,
+		},
+	}
+	var resp struct {
+		MetafieldDefinitionCreate struct {
+			UserErrors []dto.ShopifyUserError `json:"userErrors,omitempty"`
+		} `json:"metafieldDefinitionCreate"`
+	}
+	if err := c.graphqlRequest(ctx, query, payload, &resp); err != nil {
+		return err
+	}
+	if err := userErrorsToError("metafieldDefinitionCreate", resp.MetafieldDefinitionCreate.UserErrors); err != nil {
+		return err
+	}
+	c.markUSDMetaReady()
+	return nil
+}
+
+func (c *Client) markUSDMetaReady() {
+	c.usdMetaMu.Lock()
+	c.usdMetaReady = true
+	c.usdMetaMu.Unlock()
+}
+
+// addUSDPriceMetafields writes the fixed USD price into the product metafield
+// custom.usd_price (money type) for each resolved product. The storefront theme/app
+// reads this metafield to display USD, since Shopify multi-currency is blocked by the
+// store's single-currency payment gateway.
+func (c *Client) addUSDPriceMetafields(ctx context.Context, inputs []resolvedPriceInput) error {
+	if len(inputs) == 0 {
+		return nil
+	}
+	if err := c.ensureUSDPriceMetafieldDefinition(ctx); err != nil {
+		return err
+	}
+
+	// One USD price per product. Warn (don't fail) if variants of the same product
+	// disagree — product-level metafields hold a single value.
+	byProduct := make(map[string]resolvedPriceInput)
+	order := make([]string, 0, len(inputs))
+	for _, item := range inputs {
+		productID := strings.TrimSpace(item.ProductID)
+		if productID == "" {
+			continue
+		}
+		if existing, ok := byProduct[productID]; ok {
+			if existing.USDPrice != item.USDPrice {
+				c.logWarning(fmt.Sprintf(
+					"shopify usd metafield conflict product_id=%s sku=%s keeping=%s skipping=%s",
+					productID, item.SKU, formatMoneyAmount(existing.USDPrice), formatMoneyAmount(item.USDPrice),
+				))
+			}
+			continue
+		}
+		byProduct[productID] = item
+		order = append(order, productID)
+	}
+
+	if len(order) == 0 {
+		return nil
+	}
+
+	query := `
+	mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
+		metafieldsSet(metafields: $metafields) {
+			userErrors { field message }
+		}
+	}`
+
+	for start := 0; start < len(order); start += metafieldsSetBatchSize {
+		end := start + metafieldsSetBatchSize
+		if end > len(order) {
+			end = len(order)
+		}
+		batch := order[start:end]
+		metafields := make([]map[string]any, 0, len(batch))
+		for _, productID := range batch {
+			item := byProduct[productID]
+			valueBytes, err := json.Marshal(map[string]string{
+				"amount":        formatMoneyAmount(item.USDPrice),
+				"currency_code": currencyUSD,
+			})
+			if err != nil {
+				return fmt.Errorf("marshal usd money metafield: %w", err)
+			}
+			c.traceSKU(
+				item.SKU,
+				"usd metafield product_id=%s namespace=%s key=%s value=%s",
+				productID, usdMetafieldNamespace, usdMetafieldKey, string(valueBytes),
+			)
+			metafields = append(metafields, map[string]any{
+				"ownerId":   productID,
+				"namespace": usdMetafieldNamespace,
+				"key":       usdMetafieldKey,
+				"type":      usdMetafieldType,
+				"value":     string(valueBytes),
+			})
+		}
+		var data metafieldsSetRelatedData
+		if err := c.graphqlRequest(ctx, query, map[string]any{"metafields": metafields}, &data); err != nil {
+			return err
+		}
+		if err := userErrorsToError("metafieldsSet", data.MetafieldsSet.UserErrors); err != nil {
+			return err
+		}
+	}
+
+	c.logSuccess(fmt.Sprintf("shopify usd price metafields updated products=%d", len(order)))
 	return nil
 }
 

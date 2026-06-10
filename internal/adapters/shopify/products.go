@@ -110,13 +110,15 @@ type NewClientService interface {
 }
 
 type Client struct {
-	config     config.ShopifyConfig
-	httpClient *http.Client
-	logger     logging.LoggerService
-	priceMu    sync.Mutex
-	priceCache *IsraelMarketResources
-	locationMu sync.Mutex
-	locationID string
+	config       config.ShopifyConfig
+	httpClient   *http.Client
+	logger       logging.LoggerService
+	priceMu      sync.Mutex
+	priceCache   *IsraelMarketResources
+	usdMetaMu    sync.Mutex
+	usdMetaReady bool
+	locationMu   sync.Mutex
+	locationID   string
 }
 
 const maxPublicationBatchSize = 50
