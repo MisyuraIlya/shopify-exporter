@@ -87,6 +87,11 @@ temp/
 .cache/
 
 # ----------------------------
+# PAI Algorithm session PRD scaffolding (local working memory, not repo content)
+# ----------------------------
+MEMORY/
+
+# ----------------------------
 # Optional: Goland / JetBrains Go plugin files
 # ----------------------------
 *.iml

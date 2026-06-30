@@ -88,14 +88,21 @@ func (c *NewStockS) FetchStocks(ctx context.Context) ([]model.Stock, error) {
 	return resData, nil
 }
 
-// CLIENT WISH TO TAKE STOCK AND - 3
+// CLIENT WISH TO TAKE STOCK AND - 3 (3-unit reserve buffer).
+// Clamp at 0: out-of-stock items (balance <= 3, or already negative in the ERP) are
+// pushed to Shopify as 0 instead of going negative and being SKIPPED by sync_stocks,
+// which left them showing as available on the storefront. See FIXES.md 2026-06-30.
 func dtoMap(dto dto.Stock) model.Stock {
 	quantity := int32(0)
 	if !math.IsNaN(dto.ItemWarHBal) && !math.IsInf(dto.ItemWarHBal, 0) {
 		quantity = int32(math.Round(dto.ItemWarHBal))
 	}
+	stock := quantity - 3
+	if stock < 0 {
+		stock = 0
+	}
 	return model.Stock{
 		Sku:   dto.ItemKey,
-		Stock: quantity - 3,
+		Stock: stock,
 	}
 }

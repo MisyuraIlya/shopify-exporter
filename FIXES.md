@@ -4,6 +4,51 @@ A log of non-obvious issues and how they were resolved. Add a new entry at the t
 
 ---
 
+## 2026-06-30 — Out-of-stock products show as AVAILABLE on storefront (HAO-1, CUP-2, CUJ-10)
+
+### Symptom
+Items that are out of stock in חשבשבת appear **in stock** on the Shopify website, while
+the B2B "ישיר" site (reads ERP directly) shows them correctly. Client suspected we pull
+stock from the wrong warehouse ("Gila's") instead of warehouses 1+3, or that the `-3`
+reserve was the cause.
+
+### Root cause — NOT the warehouse/buffer theory
+Out-of-stock SKUs were **skipped instead of zeroed**, so Shopify kept the last positive
+quantity and kept showing them as available. Two interacting pieces:
+- `internal/adapters/apix/stock.go` `dtoMap` returned `quantity - 3` (the 3-unit reserve),
+  which goes negative for any balance ≤ 2 — and the ERP itself returns negative balances.
+- `internal/app/usecases/sync_stocks.go:66` `if item.Stock < 0 { skippedNegative++; continue }`
+  dropped negatives entirely → they were never pushed to Shopify → stale positive quantity.
+
+Verified with **live ERP** `/stocksProducts` (2026-06-30): HAO-1 balance=-1, CUJ-10=0,
+CUP-2=-1 → all computed negative → all skipped. **3080 of 6498 SKUs (47%)** were in this
+skip path (2014 at balance exactly 0). Prior log evidence: 2026-04-26 run logged
+`Stock sync completed … skipped_negative=2894`. The warehouse selection is correct for
+these examples — the ERP already returns ≤0; the code just discarded the "out of stock" signal.
+
+### The fix (surgical — keeps the 3-unit reserve)
+`internal/adapters/apix/stock.go` `dtoMap`: clamp the computed stock at 0
+(`stock := quantity - 3; if stock < 0 { stock = 0 }`). Out-of-stock items now push **0**
+to Shopify (zeroed = unavailable), while balance ≤ 3 still counts as out-of-stock per the
+client's reserve. `sync_stocks.go` skip-negative branch is left as a defensive guard
+(now unreachable for this path). Re-run a stock sync to apply across the catalog.
+
+### Open follow-ups (not code)
+1. **Run the stock sync.** Per the price ticket note, the exporter may have no cron/timer
+   on `instance-emanuel` (last full stock run was 2026-04-26) — stale stock compounds this.
+   Run: `SYNC_ONLY_STEPS=syncStocks go run ./cmd/sync-stock-and-price`.
+2. **Images not pulling** (raised in same ticket) — separate media-sync issue, investigate apart.
+
+### Triage curl (read-only) — confirm a SKU's true ERP balance
+```bash
+set -a; . ./.env; set +a
+curl -s -X POST "$API_BASE_URL/stocksProducts" -H "Content-Type: application/json" \
+  -H "Authorization: $API_TOKEN" -d '{"dbName":"EMANUEL"}' \
+  | python3 -c 'import sys,json;[print(v["ITEMKEY"],v["ITEMWARHBAL"]) for v in json.load(sys.stdin)["items"] if v["ITEMKEY"].strip() in {"HAO-1","CUP-2","CUJ-10"}]'
+```
+
+---
+
 ## 2026-05-27 — Collections (categories) missing in Shopify (Bestsellers, Personal Dedications)
 
 ### Symptom
