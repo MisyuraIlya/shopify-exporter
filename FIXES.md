@@ -4,6 +4,52 @@ A log of non-obvious issues and how they were resolved. Add a new entry at the t
 
 ---
 
+## 2026-07-14 — Stock stale in Shopify: the "every 6 hours" sync never existed (CMG-28)
+
+### Symptom
+Shopify showed CMG-28 = **102** while the ERP `/stocks` returned `ITEMWARHBAL: 250`.
+Believed the exporter ran every 6h on `instance-emanuel`; stock "wouldn't update" across
+repeated attempts.
+
+### Root cause — no scheduler at all
+There was **no cron, no systemd timer, and no exporter container** on the VM. The exporter
+is a one-shot batch container (`docker run --rm`, `main()` runs once and exits); the deploy
+script only starts it once and then `docker image prune -a -f` removes the image. Nothing
+re-ran it. Evidence:
+- Root crontab had only the two symfony jobs (`CronManager` 2am, `CronImageUploader` 4am).
+  No spetsar crontab, no `/etc/cron.d` entry, no systemd timer/unit for the exporter.
+- Last stock run was **2026-06-10** (`sync-to-shopify-20260610-101417.log`); prior runs
+  Apr 23 / Apr 26 / May 27 ×3 were sporadic manual runs — never a 6h cadence.
+- 102 = 105 − 3 reserve: a stale value from an old run. ERP had since risen to 250.
+- The env file had **no** `SYNC_ONLY_*` filters (that suspect was cleared).
+- Bonus: the 2026-06-30 clamp fix had also never run in prod for the same reason.
+
+### The fix
+1. **Ran a sync now** — pushed current balances (CMG-28 → 247, verified via scoped trace
+   `SYNC_ONLY_STEPS=syncStocks SYNC_ONLY_SKUS=CMG-28 SYNC_TRACE_SKUS=CMG-28`).
+2. **Installed the missing scheduler** — root cron every 6h (00/06/12/18 UTC):
+   `0 */6 * * * /usr/bin/flock -n /run/shopify-exporter.lock /home/spetsar/run-shopify-exporter.sh >> /home/spetsar/shopify-exporter-logs/cron.log 2>&1`
+   `run-shopify-exporter.sh` runs the container in the foreground (flock prevents overlap),
+   env-file `/home/spetsar/shopify-exporter.env`, logs volume-mounted as before.
+
+### Image delivery gotcha (important for future deploys)
+The VM service account (`...-compute@developer.gserviceaccount.com`, scope
+`devstorage.read_only`) **cannot pull from Artifact Registry** — `docker pull` on the VM
+fails with `denied: ...downloadArtifacts ... Unauthenticated request`. So the cron runs a
+**locally-loaded** image, shipped via `docker save | scp | docker load` (no VM-side registry
+auth). `deploy-sync-to-shopify.sh` still does `docker pull` on the VM and will FAIL until it
+is switched to save/load (or the SA is granted `roles/artifactregistry.reader` **and** the VM
+scope widened to `cloud-platform`, which needs a VM stop/start — avoided; prod symfony runs here).
+
+### Triage checklist — "stock won't update"
+1. `sudo crontab -l` on the VM — is there a `run-shopify-exporter.sh` line? Check
+   `/home/spetsar/shopify-exporter-logs/cron.log` and the newest `sync-to-shopify-*.log`.
+2. Confirm ERP truth: POST `/stocks` (single SKU) or `/stocksProducts` (bulk, `dbName` only).
+   Shopify target = `ITEMWARHBAL − 3`, clamped at 0.
+3. Scoped trace one SKU: `SYNC_ONLY_STEPS=syncStocks SYNC_ONLY_SKUS=<sku> SYNC_TRACE_SKUS=<sku>`.
+
+---
+
 ## 2026-06-30 — Out-of-stock products show as AVAILABLE on storefront (HAO-1, CUP-2, CUJ-10)
 
 ### Symptom
