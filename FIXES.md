@@ -51,13 +51,29 @@ Set it to an empty value to track every SKU. Covered by
 `internal/adapters/shopify/products_tracking_test.go`.
 
 ### Verify after deploying
-```bash
-curl -s "https://$SHOPIFY_SHOP_DOMAIN/admin/api/$SHOPIFY_API_VERSION/graphql.json" \
-  -H "X-Shopify-Access-Token: $SHOPIFY_ACCESS_TOKEN" -H 'Content-Type: application/json' \
-  --data '{"query":"{ productVariants(first:250, query:\"inventory_tracked:false\"){ nodes{ sku } } }"}'
+
+⚠ **Do NOT use `query: "inventory_tracked:false"`.** Shopify does not support it as a
+search field — it returns `"Invalid search field for this query" (code: invalid_field)`
+in `extensions.search[].warnings` and **silently ignores the filter**, so you get the
+first 250 variants regardless of tracking and it looks like a huge problem. The warning
+is easy to miss because the query still returns HTTP 200 with plausible-looking data.
+
+Paginate instead and read `inventoryItem.tracked` per variant:
+```graphql
+query($cursor: String) {
+  productVariants(first: 250, after: $cursor) {
+    pageInfo { hasNextPage endCursor }
+    nodes { sku inventoryItem { tracked } }
+  }
+}
 ```
-Expect only `ZZ-*` SKUs in the result. Spot-check a normal SKU reads `tracked: true`:
+The catalogue is ~4,263 variants ⇒ 18 pages. Expect **every untracked SKU to be `ZZ-*`**.
+Spot-check a normal SKU reads `tracked: true`:
 `{ productVariants(first:1, query:"sku:HVM-1"){ nodes{ sku inventoryItem{tracked} } } }`
+(`sku:` *is* a valid search field — it is only `inventory_tracked` that is not.)
+
+Baseline measured 2026-07-27, immediately before this fix was deployed:
+`TRACKED = 4130 · UNTRACKED = 133 (45 ZZ-* + 88 real merchandise SKUs)`.
 
 ---
 
