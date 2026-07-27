@@ -2,6 +2,10 @@ package config
 
 import "time"
 
+// DefaultUntrackedSkuPrefixes is the fallback for SHOPIFY_UNTRACKED_SKU_PREFIXES.
+// ZZ-* are the Hashavshevet placeholder/service items for Emanuel.
+var DefaultUntrackedSkuPrefixes = []string{"ZZ-"}
+
 type DailyConfig struct {
 	Shopify     ShopifyConfig
 	ApiHasav    ApiHasvConfig
@@ -20,6 +24,12 @@ type ShopifyConfig struct {
 	Token      string
 	APIVer     string
 	Timeout    time.Duration
+	// UntrackedSkuPrefixes are SKU prefixes that must NOT get Shopify inventory
+	// tracking. These are ERP service/placeholder items (ZZ-*: "נא פנו אלינו לביצוע
+	// הזמנה", "תשלום בכרטיס אשראי - הזמנות מיוחדות") that carry no stock in
+	// Hashavshevet and never appear in /stocksProducts. Tracking them would pin them
+	// at quantity 0 and make them unbuyable, breaking the special-order flow.
+	UntrackedSkuPrefixes []string
 	// Optional pricing settings used by price sync.
 	BaseCurrency               string
 	InternationalMarketHandle  string

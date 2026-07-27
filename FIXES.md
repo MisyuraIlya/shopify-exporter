@@ -4,6 +4,63 @@ A log of non-obvious issues and how they were resolved. Add a new entry at the t
 
 ---
 
+## 2026-07-27 — Inventory tracking never set by the product sync (Monday 12634541256)
+
+### Symptom
+PM: some products arrive in Shopify **with** inventory and others with **no inventory
+tracking at all**, so a customer can buy an item that is already out of stock.
+
+### Root cause — tracking was only ever a side effect of the stock sync
+`ensureInventoryItemTracked` (`internal/adapters/shopify/stock.go:201`) was the **only**
+place in the exporter that set `tracked: true`, and it runs solely for SKUs present in
+the ERP `/stocksProducts` feed. The product sync never set it:
+`updatePrimaryVariantIdentifiers` (`internal/adapters/shopify/products.go:743`) sent
+`inventoryItem: { sku }` and nothing else — on **both** the create (`products.go:200`)
+and update (`products.go:255`) paths, so a re-sync did not repair it either.
+
+So a variant's tracking depended entirely on whether the stock sync had ever happened to
+cover that SKU. Evidence from the ERP (read-only, 2026-07-27):
+- `/products` (`noteIds 17,78,79,80,81`) → **4,262** catalogue SKUs — what we push.
+- `/stocksProducts` → 6,551 rows, covering **4,174** of them.
+- ⇒ **88 catalogue SKUs have no stock row at all** and could never become tracked.
+- Aggravated by the missing 6h scheduler below: between 2026-06-10 and 2026-07-14 the
+  stock sync never ran, so anything created in that window stayed untracked.
+
+### The ZZ-* carve-out (do not "fix" this)
+Of those 88, **45 are published — and all 45 are `ZZ-*`**: 44 × "נא פנו אלינו לביצוע
+הזמנה" plus `ZZ-99` "תשלום בכרטיס אשראי - הזמנות מיוחדות". These are Hashavshevet
+service/placeholder items with no stock by design. Tracking them would pin them at
+quantity 0 and make them **unbuyable**, breaking the special-order flow. They must stay
+untracked. (The remaining 43 are unpublished and never reach the storefront.)
+
+### The fix
+`updatePrimaryVariantIdentifiers` now sends `tracked` alongside the SKU, on create and
+update, so every product-sync run enforces the correct state independent of the stock
+feed — and corrects a variant that is already wrong, in either direction:
+
+```go
+variantInput["inventoryItem"] = map[string]any{
+    "sku":     product.Sku,
+    "tracked": c.shouldTrackInventory(product.Sku),
+}
+```
+
+`shouldTrackInventory` tracks everything except the configured prefixes, from
+`SHOPIFY_UNTRACKED_SKU_PREFIXES` (default `ZZ-`, see `internal/config/config.go`).
+Set it to an empty value to track every SKU. Covered by
+`internal/adapters/shopify/products_tracking_test.go`.
+
+### Verify after deploying
+```bash
+curl -s "https://$SHOPIFY_SHOP_DOMAIN/admin/api/$SHOPIFY_API_VERSION/graphql.json" \
+  -H "X-Shopify-Access-Token: $SHOPIFY_ACCESS_TOKEN" -H 'Content-Type: application/json' \
+  --data '{"query":"{ productVariants(first:250, query:\"inventory_tracked:false\"){ nodes{ sku } } }"}'
+```
+Expect only `ZZ-*` SKUs in the result. Spot-check a normal SKU reads `tracked: true`:
+`{ productVariants(first:1, query:"sku:HVM-1"){ nodes{ sku inventoryItem{tracked} } } }`
+
+---
+
 ## 2026-07-14 — Stock stale in Shopify: the "every 6 hours" sync never existed (CMG-28)
 
 ### Symptom

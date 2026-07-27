@@ -740,6 +740,31 @@ func (c *Client) getPrimaryVariantID(ctx context.Context, productGid string) (st
 	return strings.TrimSpace(data.Product.Variants.Nodes[0].ID), nil
 }
 
+// shouldTrackInventory reports whether Shopify should track inventory for a SKU.
+// Everything is tracked except the configured service/placeholder prefixes (ZZ-* by
+// default): those carry no stock in Hashavshevet, never appear in /stocksProducts, and
+// must stay buyable — tracking would pin them at 0 and block the special-order flow.
+func (c *Client) shouldTrackInventory(sku string) bool {
+	return shouldTrackInventory(sku, c.config.UntrackedSkuPrefixes)
+}
+
+func shouldTrackInventory(sku string, untrackedPrefixes []string) bool {
+	normalized := strings.ToUpper(strings.TrimSpace(sku))
+	if normalized == "" {
+		return false
+	}
+	for _, prefix := range untrackedPrefixes {
+		normalizedPrefix := strings.ToUpper(strings.TrimSpace(prefix))
+		if normalizedPrefix == "" {
+			continue
+		}
+		if strings.HasPrefix(normalized, normalizedPrefix) {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *Client) updatePrimaryVariantIdentifiers(ctx context.Context, productGid string, product model.Product) error {
 	variantID, err := c.getPrimaryVariantID(ctx, productGid)
 	if err != nil {
@@ -753,8 +778,14 @@ func (c *Client) updatePrimaryVariantIdentifiers(ctx context.Context, productGid
 	variantInput := map[string]any{"id": variantID}
 
 	if product.Sku != "" {
+		// Inventory tracking must be set here, on every create AND update. The stock
+		// sync only ever flips `tracked` for SKUs that appear in the ERP's
+		// /stocksProducts feed, so anything the feed misses used to stay untracked in
+		// Shopify and could be oversold. Sent explicitly in both directions so a
+		// re-sync also corrects a variant that is in the wrong state.
 		variantInput["inventoryItem"] = map[string]any{
-			"sku": product.Sku,
+			"sku":     product.Sku,
+			"tracked": c.shouldTrackInventory(product.Sku),
 		}
 	}
 

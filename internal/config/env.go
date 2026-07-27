@@ -64,6 +64,30 @@ func stringWithDefault(key, def string) string {
 	return variable
 }
 
+// stringSliceWithDefault reads a comma/semicolon/pipe/newline separated list.
+// An explicitly empty value yields an empty slice (opt out of the default).
+func stringSliceWithDefault(key string, def []string) []string {
+	raw, isOk := os.LookupEnv(key)
+	if !isOk {
+		return def
+	}
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		switch r {
+		case ',', ';', '|', '\n', '\r', '\t':
+			return true
+		default:
+			return false
+		}
+	})
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			values = append(values, trimmed)
+		}
+	}
+	return values
+}
+
 func intWithDefault(key string, def int) (int, error) {
 	variable, isOk := os.LookupEnv(key)
 	if !isOk || variable == "" {
@@ -118,6 +142,7 @@ func LoadForDailySync() (*DailyConfig, error) {
 	shopifyIntlMarketName := stringWithDefault("SHOPIFY_INTERNATIONAL_MARKET_NAME", "")
 	shopifyIntlCatalogTitle := stringWithDefault("SHOPIFY_INTERNATIONAL_CATALOG_TITLE", "")
 	shopifyIntlPriceListName := stringWithDefault("SHOPIFY_INTERNATIONAL_PRICE_LIST_NAME", "")
+	shopifyUntrackedPrefixes := stringSliceWithDefault("SHOPIFY_UNTRACKED_SKU_PREFIXES", DefaultUntrackedSkuPrefixes)
 
 	cfgShopify := ShopifyConfig{
 		ShopDomain:                 shopifyBaseUrl,
@@ -129,6 +154,7 @@ func LoadForDailySync() (*DailyConfig, error) {
 		InternationalMarketName:    shopifyIntlMarketName,
 		InternationalCatalogTitle:  shopifyIntlCatalogTitle,
 		InternationalPriceListName: shopifyIntlPriceListName,
+		UntrackedSkuPrefixes:       shopifyUntrackedPrefixes,
 	}
 
 	hasavBaseUrl, err := requriedString("API_BASE_URL")
@@ -190,6 +216,7 @@ func LoadForSyncOrder() (*OrdersConfig, error) {
 	shopifyIntlMarketName := stringWithDefault("SHOPIFY_INTERNATIONAL_MARKET_NAME", "")
 	shopifyIntlCatalogTitle := stringWithDefault("SHOPIFY_INTERNATIONAL_CATALOG_TITLE", "")
 	shopifyIntlPriceListName := stringWithDefault("SHOPIFY_INTERNATIONAL_PRICE_LIST_NAME", "")
+	shopifyUntrackedPrefixes := stringSliceWithDefault("SHOPIFY_UNTRACKED_SKU_PREFIXES", DefaultUntrackedSkuPrefixes)
 
 	cfgShopify := ShopifyConfig{
 		ShopDomain:                 shopifyBaseUrl,
@@ -200,6 +227,7 @@ func LoadForSyncOrder() (*OrdersConfig, error) {
 		InternationalMarketName:    shopifyIntlMarketName,
 		InternationalCatalogTitle:  shopifyIntlCatalogTitle,
 		InternationalPriceListName: shopifyIntlPriceListName,
+		UntrackedSkuPrefixes:       shopifyUntrackedPrefixes,
 	}
 
 	hasavBaseUrl, err := requriedString("API_BASE_URL")
