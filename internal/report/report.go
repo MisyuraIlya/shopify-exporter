@@ -393,15 +393,22 @@ type Counter struct {
 	Value int64
 }
 
+// Run statuses returned by Summary.Status.
+const (
+	StatusOK      = "ok"
+	StatusWarning = "warning"
+	StatusFailed  = "failed"
+)
+
 // Status classifies the run for the subject line.
 func (s Summary) Status() string {
 	switch {
 	case s.FailedSteps > 0 || len(s.ProductsFailed) > 0:
-		return "failed"
+		return StatusFailed
 	case len(s.Warnings) > 0:
-		return "warning"
+		return StatusWarning
 	default:
-		return "ok"
+		return StatusOK
 	}
 }
 

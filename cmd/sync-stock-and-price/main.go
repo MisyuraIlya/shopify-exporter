@@ -61,7 +61,7 @@ func main() {
 			return fmt.Errorf("shopify stock service unavailable")
 		}
 		apixStockClient := apix.NewStockService(cfg.ApiHasav, httpClient, logger)
-		return usecases.NewSyncStocks(apixStockClient, stockClient, logger).Run(ctx)
+		return usecases.NewSyncStocks(apixStockClient, stockClient, logger, cfg.Stock).Run(ctx)
 	})
 
 	logger.LogSuccess("stock and price sync completed")

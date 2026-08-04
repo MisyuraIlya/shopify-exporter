@@ -5,11 +5,31 @@
 #
 # Usage: run-shopify-exporter.sh [STEPS] [MODE]
 #   STEPS : value for SYNC_ONLY_STEPS (e.g. "syncStocks"); empty = full sync (all steps)
-#   MODE  : short label used for the container name + log line (default "full")
+#   MODE  : short label used for the container name + log line (default "full").
+#           MODE=delta additionally runs the stock step in delta mode and silences the
+#           "nothing changed" report — see below.
 #
-# Scheduling (root crontab):
-#   every 6h  -> STEPS="syncStocks"  MODE=stock  (fast, ~10-15 min; keeps stock fresh)
-#   daily 03h -> STEPS=""            MODE=full   (products/categories/prices/etc.)
+# Scheduling (root crontab). Every stock-touching job shares ONE lock file, so a delta
+# tick can never overlap the daily full sync and race it on the snapshot:
+#
+#   */5 * * * * /usr/bin/flock -n /var/lock/shopify-exporter-stock.lock \
+#     /home/spetsar/run-shopify-exporter.sh "syncStocks" delta \
+#     >> /home/spetsar/shopify-exporter-logs/cron-stock.log 2>&1
+#
+#   0 3 * * *   /usr/bin/flock -n /var/lock/shopify-exporter-stock.lock \
+#     /home/spetsar/run-shopify-exporter.sh "" full \
+#     >> /home/spetsar/shopify-exporter-logs/cron-full.log 2>&1
+#
+# `flock -n` skips the tick rather than queueing it: a stacked queue of stock runs all
+# pushing the same numbers helps nobody.
+#
+#   delta (*/5)  -> only SKUs whose ERP quantity moved since the last successful run.
+#                   Usually a handful of SKUs and a few API calls, so the storefront is
+#                   at most ~5 minutes behind Hashavshevet instead of ~6 hours.
+#   full  (daily) -> everything, including the reconciliation the delta cannot do:
+#                   Shopify's on_hand also moves on its own when an order is fulfilled,
+#                   and only a full pass notices that the ERP number needs re-pushing.
+#                   DO NOT drop this job — delta alone will slowly drift.
 #
 # Self-heal: the image is loaded locally because the VM service account cannot pull
 # from Artifact Registry. Any backend/frontend deploy that runs
@@ -51,8 +71,23 @@ if [ -n "${STEPS}" ]; then
   ENV_ARGS+=(--env "SYNC_ONLY_STEPS=${STEPS}")
 fi
 
+# The frequent tick pushes only what the ERP changed, and stays quiet when that is
+# nothing. Without the second flag a five-minute cadence mails ~288 "nothing happened"
+# reports a day and the ones that matter get lost. Liveness for THIS job is therefore
+# the log file, not the inbox — the daily full run keeps mailing unconditionally, so an
+# empty inbox in the morning still means the scheduler is dead.
+if [ "${MODE}" = "delta" ]; then
+  ENV_ARGS+=(--env "SYNC_STOCK_MODE=delta")
+  ENV_ARGS+=(--env "REPORT_EMAIL_ONLY_ON_CHANGE=true")
+fi
+
 # Foreground run: flock holds the lock for the full run so the next tick of the
 # same mode cannot start a second overlapping run.
+#
+# The volume below is load-bearing for delta mode, not just for logs: the snapshot of
+# the last pushed quantities defaults to stock-state.json inside LOG_FILE_DIR, so it
+# lands on the host and survives this one-shot `docker run`. Without the mount every
+# tick would find no snapshot and push the whole catalogue.
 docker run --rm \
   --name "${NAME}" \
   --env-file "${ENV_FILE}" \

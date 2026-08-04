@@ -4,6 +4,112 @@ A log of non-obvious issues and how they were resolved. Add a new entry at the t
 
 ---
 
+## 2026-08-04 — Stock was up to 6 hours stale by design: delta sync every 5 minutes
+
+### Symptom
+PM: customers order items the ERP already shows as out of stock. Not a broken sync this
+time — the 6h cron was firing and succeeding. The window itself was the bug: a balance
+that dropped one minute after a run stayed wrong on the storefront for nearly 6 hours.
+
+### Why the interval could not simply be shortened
+A stock run cost ~10,700 GraphQL calls, and every one of them serialises on the
+process-wide lock in `adminGraphQLLimiter` (`products.go:649` holds it across the whole
+round-trip), so the 4 goroutines in `sync_stocks.go` were never parallel against Shopify.
+Three separate sources of waste:
+
+1. `lookupInventoryItemIDBySKU` searched **one request per SKU** — ~6,500 of them.
+2. `inventoryActivate` fired for **every** resolved SKU on **every** run, even when the
+   item had been active at that location for months. ~4,200 pointless mutations a run.
+3. All ~4,174 resolved SKUs were re-pushed whether or not the quantity had moved. The
+   before-quantity needed to skip them was already being read — only for the report.
+
+### The fix
+**Resolution is now bulk.** `buildInventoryLookup` paginates every variant once
+(`inventoryVariantSelection`, 100 a page) into `sku -> {inventoryItemID, tracked,
+hasLevel, on_hand}`: ~42 requests instead of ~6,500. Below
+`bulkInventoryLookupThreshold` (40 SKUs) it still searches per SKU, because paginating
+the catalogue to find three SKUs is the worse trade — that is the delta case.
+
+**Writes are now conditional.** A SKU whose Shopify `on_hand` already equals the target
+*and* is tracked *and* has a level at the location is counted and skipped, no mutation.
+`inventoryActivate` runs only when the lookup returned no `inventoryLevel` — the exact
+condition it would create. Page size is 100, not the 250 the price lookup uses, because
+this selection nests `inventoryItem -> inventoryLevel -> quantities` and Shopify bills a
+connection at `first` × per-node cost; 250 risks the per-query cost ceiling outright.
+
+**`SYNC_STOCK_MODE=delta`** diffs the ERP feed against `stock-state.json` (last pushed
+quantities, written atomically, `internal/infra/stockstate`) and resolves only the SKUs
+that moved. A quiet tick costs **one ERP request and zero Shopify calls**. Cron is now
+`*/5` delta + daily full, both under one `flock` file so they cannot race the snapshot.
+
+Net: ~43,000 Shopify calls/day at a 6h cadence became roughly 2,000/day at 5 minutes.
+More frequent *and* lighter, because the old run's cost was almost entirely waste.
+
+### Why the snapshot records the ERP and not Shopify
+Tempting to cache Shopify's `on_hand` and skip the reads. Wrong: Shopify's on-hand moves
+on its own when an order is **fulfilled**, so a cached copy goes stale and the sync would
+skip a SKU that genuinely needs correcting. The snapshot answers only "did Hashavshevet
+change this number since we pushed it". Drift in the other direction is what the **daily
+full run** exists to reconcile — delta alone will slowly drift, so do not drop it.
+
+### Also fixed here
+- **`apix/stock.go` swallowed every error.** A failed `httpClient.Do` left `resp` nil and
+  the next line's `defer resp.Body.Close()` panicked; a malformed body returned an empty
+  slice, and `sync_stocks` then logged `no valid SKUs` and returned **success** having
+  synced nothing. Rare at 4 runs a day, routine at 288. All paths return errors now.
+- **`inventoryPolicy` was never set.** Nothing asserted it, so a variant switched to
+  "continue selling when out of stock" (by hand in the admin, or by an app) stayed
+  oversellable forever, and no amount of stock accuracy helps: pushing 0 still leaves it
+  buyable. Now sent as `DENY` next to `tracked` on every create and update.
+- **The stock sync force-tracked `ZZ-*` service items** if they ever appeared in the feed,
+  while the product sync sets them untracked — the two would have fought every run. The
+  stock push now skips the untracked prefixes. A no-op today (they are not in
+  `/stocksProducts`), which is precisely why it was worth pinning down.
+- **Report noise.** `REPORT_EMAIL_ONLY_ON_CHANGE=true` (set by the delta cron) suppresses
+  the mail only when a run succeeded *and* changed nothing. The daily full run still mails
+  unconditionally, so "empty inbox = the scheduler is dead" still holds for it.
+
+### Verifying it without writing to the live store
+`SYNC_STOCK_DRY_RUN=true` does every read and no write: it resolves the location, builds
+the inventory map, computes the delta, then logs and reports each SKU that **would**
+move (`before -> after`) plus the `inventoryItemUpdate` / `inventoryActivate` calls that
+were withheld, and returns. The emailed CSV carries the full list, so a change of this
+size is reviewable before it reaches a storefront.
+```bash
+SYNC_ONLY_STEPS=syncStocks SYNC_STOCK_DRY_RUN=true go run ./cmd/sync-stock-and-price
+```
+It is enforced in the **adapter** (`stock.go`), not the use case, so no other caller of
+`SetOnHandQuantities` can write during a dry run. Two things it deliberately does not do:
+- **It never writes the snapshot.** Recording proposals as pushed would make the next
+  real delta skip all of them and go quiet while Shopify stayed wrong. This is the one
+  failure mode that would turn a safety feature into the outage it was meant to prevent,
+  so it is covered by a test.
+- **It covers the stock step only.** The product sync still writes; there is no global
+  dry run, because half the product mutations return IDs the next call depends on and
+  stubbing them out fails in more confusing ways than it prevents.
+
+### Before shortening the interval further
+`/stocksProducts` returns ~6,500 rows in one request and is the only ERP load here, but
+it is likely a heavy aggregation — `API_DURATION_MS` is 10s. Think in duty cycle, not
+call count: an 8s query every 5 min is ~2.7% load, every 2 min is ~7%. Measure first:
+```bash
+for i in 1 2 3; do curl -s -o /dev/null -w "%{time_total}s\n" -X POST "$API_BASE_URL/stocksProducts" \
+  -H "Content-Type: application/json" -H "Authorization: $API_TOKEN" -d '{"dbName":"EMANUEL"}'; sleep 5; done
+```
+An endpoint returning "changes since <timestamp>" would make this free and drops straight
+into the same delta path.
+
+### Still open
+- The global `adminGraphQLLimiter` lock still serialises every Shopify request. It matters
+  far less now that a run makes tens of calls instead of ten thousand; narrowing it to the
+  rate-limit bookkeeping needs real token-bucket accounting and was left alone deliberately.
+- The 3-unit reserve is still global (`apix/stock.go` `dtoMap`). With a 5-minute window it
+  covers all but the fastest movers; per-SKU reserves would be the next step.
+- Zero oversell is still not guaranteed — two databases, one window. Only checkout-time
+  validation against the ERP (`POST /stocks`, single SKU) via a Shopify Function closes it.
+
+---
+
 ## 2026-08-04 — Cron ran on time and failed every time: a backend/frontend deploy deletes the exporter image (Monday 12709784941)
 
 ### Symptom

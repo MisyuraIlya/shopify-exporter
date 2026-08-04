@@ -790,6 +790,15 @@ func (c *Client) updatePrimaryVariantIdentifiers(ctx context.Context, productGid
 			"sku":     product.Sku,
 			"tracked": c.shouldTrackInventory(product.Sku),
 		}
+
+		// DENY is Shopify's default for a new variant, but nothing here ever asserted
+		// it, so a variant switched to "continue selling when out of stock" — by hand
+		// in the admin, or by an app — stayed oversellable forever. No amount of stock
+		// accuracy helps then: pushing 0 still leaves the item buyable. Sent on every
+		// create and update for the same reason `tracked` is.
+		if c.shouldTrackInventory(product.Sku) {
+			variantInput["inventoryPolicy"] = "DENY"
+		}
 	}
 
 	if product.Barcode != "" {
