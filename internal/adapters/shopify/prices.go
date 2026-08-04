@@ -234,10 +234,10 @@ func (c *Client) UpsertPricesBatch(ctx context.Context, inputs []PriceUpsertInpu
 				found := lookup
 				hint = &found
 			} else {
+				// Counted, not warned — see the note in stock.go: a SKU priced in the
+				// ERP but not published to Shopify is routine and very common here.
 				skippedMissing++
-				message := (&variantNotFoundError{SKU: sku}).Error()
-				c.logWarning(message)
-				c.reportWarning("price", message)
+				c.logWarning((&variantNotFoundError{SKU: sku}).Error())
 				continue
 			}
 		}
@@ -246,7 +246,6 @@ func (c *Client) UpsertPricesBatch(ctx context.Context, inputs []PriceUpsertInpu
 			if missing, ok := isVariantNotFoundError(err); ok {
 				skippedMissing++
 				c.logWarning(missing.Error())
-				c.reportWarning("price", missing.Error())
 				continue
 			}
 			return err

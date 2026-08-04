@@ -233,6 +233,12 @@ func (s Summary) HTML(opts RenderOptions) string {
 		}
 		b.WriteString(`</ul>`)
 		writeTruncationNote(&b, len(s.Warnings), max)
+		if s.SuppressedWarnings > 0 {
+			b.WriteString(fmt.Sprintf(
+				`<div style="font-size:12px;color:#5f6368;margin:0 0 16px">ועוד %d אזהרות מאותו סוג שלא הוצגו.</div>`,
+				s.SuppressedWarnings,
+			))
+		}
 	}
 
 	// Technical footer, LTR.
@@ -246,6 +252,9 @@ func (s Summary) HTML(opts RenderOptions) string {
 			s.PriceUnchanged,
 			s.ProductsUpdate,
 		)))
+	}
+	if s.SuppressedWarnings > 0 {
+		b.WriteString(html.EscapeString(fmt.Sprintf("\nwarnings_suppressed=%d", s.SuppressedWarnings)))
 	}
 	for _, c := range s.Counters {
 		b.WriteString(html.EscapeString(fmt.Sprintf("\n%s=%d", c.Name, c.Value)))

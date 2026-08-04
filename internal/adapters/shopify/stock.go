@@ -84,18 +84,19 @@ func (c *Client) SetOnHandQuantities(ctx context.Context, inputs []StockInput) e
 		variant, err := c.lookupInventoryItemIDBySKU(ctx, input.SKU, locationID)
 		if err != nil {
 			if missing, ok := isVariantNotFoundError(err); ok {
+				// Counted, not warned. The ERP stock feed covers ~6,500 rows against
+				// ~4,200 published SKUs, so roughly 40% of every run has no Shopify
+				// variant — that is normal here, not a problem. Warning on each would
+				// flag every single report and teach the reader to ignore it.
 				skippedMissing++
 				c.logWarning(missing.Error())
-				c.reportWarning("stock", missing.Error())
 				continue
 			}
 			return err
 		}
 		if variant.InventoryItemID == "" {
 			skippedMissing++
-			message := fmt.Sprintf("shopify inventory item not found for sku %s", input.SKU)
-			c.logWarning(message)
-			c.reportWarning("stock", message)
+			c.logWarning(fmt.Sprintf("shopify inventory item not found for sku %s", input.SKU))
 			continue
 		}
 		resolved = append(resolved, resolvedStockInput{

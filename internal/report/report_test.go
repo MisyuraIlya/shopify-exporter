@@ -3,6 +3,7 @@ package report
 import (
 	"encoding/base64"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -59,7 +60,7 @@ func TestStockSeenOnlyRecordsRealChanges(t *testing.T) {
 func TestPriceSeenIgnoresSubCentNoise(t *testing.T) {
 	run := testRun()
 
-	run.PriceSeen("DRA-1", "ils", 23.36, true, 23.36)   // identical
+	run.PriceSeen("DRA-1", "ils", 23.36, true, 23.36)    // identical
 	run.PriceSeen("DRA-2", "ILS", 23.360, true, 23.3601) // rounding noise
 	run.PriceSeen("DRA-3", "ILS", 19.80, true, 23.36)    // real change
 	run.PriceSeen("DRA-4", "USD", 0, false, 6.50)        // no prior value
@@ -162,6 +163,42 @@ func TestCountersAreOrderedAndScoped(t *testing.T) {
 	}
 	if got, want := counters[0].Value, int64(4200); got != want {
 		t.Errorf("stock.pushed = %d, want %d (increments accumulate)", got, want)
+	}
+}
+
+func TestWarningsAreCappedPerScopeButStillCounted(t *testing.T) {
+	// The ERP stock feed carries ~40% SKUs that are not published to Shopify. Those are
+	// counted, not warned — but if anything ever does warn per SKU, one repeating
+	// condition must not bury the lines that matter or blow up the CSV.
+	run := testRun()
+	for i := range 200 {
+		run.Warn("stock", "shopify variant not found for sku BULK-"+strconv.Itoa(i))
+	}
+	run.Warn("products", "product skipped: empty title sku=ODD-1")
+
+	summary := run.Snapshot()
+
+	if got, want := len(summary.Warnings), maxWarningsPerScope+1; got != want {
+		t.Errorf("warnings kept = %d, want %d (25 stock + 1 products)", got, want)
+	}
+	if got, want := summary.SuppressedWarnings, 175; got != want {
+		t.Errorf("suppressed = %d, want %d", got, want)
+	}
+	// The cap is per scope, so a different scope is never crowded out.
+	found := false
+	for _, w := range summary.Warnings {
+		if w.Scope == "products" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("the products warning must survive the stock scope's flood")
+	}
+	if got, want := run.WarningTotals()["stock"], 200; got != want {
+		t.Errorf("stock warning total = %d, want %d", got, want)
+	}
+	if !strings.Contains(summary.HTML(RenderOptions{}), "warnings_suppressed=175") {
+		t.Error("the suppressed count must be visible in the report footer")
 	}
 }
 
@@ -327,10 +364,10 @@ func TestBuildMessageIsWellFormedMIME(t *testing.T) {
 
 func TestValidateRejectsIncompleteSMTP(t *testing.T) {
 	cases := map[string]SMTPConfig{
-		"no host":       {Port: 587, From: "a@b.co", To: []string{"c@d.co"}},
-		"no port":       {Host: "smtp", From: "a@b.co", To: []string{"c@d.co"}},
-		"no from":       {Host: "smtp", Port: 587, To: []string{"c@d.co"}},
-		"no recipients": {Host: "smtp", Port: 587, From: "a@b.co"},
+		"no host":         {Port: 587, From: "a@b.co", To: []string{"c@d.co"}},
+		"no port":         {Host: "smtp", From: "a@b.co", To: []string{"c@d.co"}},
+		"no from":         {Host: "smtp", Port: 587, To: []string{"c@d.co"}},
+		"no recipients":   {Host: "smtp", Port: 587, From: "a@b.co"},
 		"blank recipient": {Host: "smtp", Port: 587, From: "a@b.co", To: []string{"  "}},
 	}
 	for name, cfg := range cases {
@@ -360,8 +397,15 @@ func TestRecordingIsConcurrencySafe(t *testing.T) {
 	if got, want := len(summary.StockChanges), 50; got != want {
 		t.Errorf("stock changes = %d, want %d", got, want)
 	}
-	if got, want := len(summary.Warnings), 50; got != want {
-		t.Errorf("warnings = %d, want %d", got, want)
+	// 50 warnings in one scope, capped at 25 kept + 25 counted as suppressed.
+	if got, want := len(summary.Warnings), maxWarningsPerScope; got != want {
+		t.Errorf("warnings kept = %d, want %d", got, want)
+	}
+	if got, want := summary.SuppressedWarnings, 50-maxWarningsPerScope; got != want {
+		t.Errorf("warnings suppressed = %d, want %d", got, want)
+	}
+	if got, want := run.WarningTotals()["stock"], 50; got != want {
+		t.Errorf("warning total = %d, want %d (no warning is lost from the tally)", got, want)
 	}
 	if got, want := summary.Counters[0].Value, int64(50); got != want {
 		t.Errorf("counter = %d, want %d", got, want)

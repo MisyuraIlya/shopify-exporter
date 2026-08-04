@@ -33,6 +33,11 @@ const (
 // Shopify formatted to 2 decimals, so anything under half a cent is noise.
 const priceEpsilon = 0.005
 
+// maxWarningsPerScope caps how many distinct warnings one scope contributes. A single
+// repeating condition across thousands of SKUs would otherwise bury the few lines that
+// need a human, and blow up the CSV. The overflow is counted instead.
+const maxWarningsPerScope = 25
+
 // Step is one stage of the pipeline (syncProducts, syncStocks, …).
 type Step struct {
 	Name       string
@@ -135,8 +140,12 @@ type Run struct {
 	products       []ProductChange
 	productsUpdate int64
 	warnings       []Note
-	counters       map[string]int64
-	counterOrder   []string
+	// warningsByScope counts every warning offered, including ones the per-scope cap
+	// suppressed, so the report can say how many there really were.
+	warningsByScope    map[string]int
+	suppressedWarnings int
+	counters           map[string]int64
+	counterOrder       []string
 }
 
 // NewRun starts a report for the given job.
@@ -300,9 +309,34 @@ func (r *Run) Warn(scope, message string) {
 	if message == "" {
 		return
 	}
+	scope = strings.TrimSpace(scope)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.warnings = append(r.warnings, Note{Scope: strings.TrimSpace(scope), Message: message})
+	if r.warningsByScope == nil {
+		r.warningsByScope = make(map[string]int)
+	}
+	r.warningsByScope[scope]++
+	if r.warningsByScope[scope] > maxWarningsPerScope {
+		// Suppressed, not lost: the total lands in the report footer as a counter.
+		r.suppressedWarnings++
+		return
+	}
+	r.warnings = append(r.warnings, Note{Scope: scope, Message: message})
+}
+
+// WarningTotals reports how many warnings were recorded per scope, including the ones
+// suppressed by the per-scope cap.
+func (r *Run) WarningTotals() map[string]int {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	totals := make(map[string]int, len(r.warningsByScope))
+	for scope, count := range r.warningsByScope {
+		totals[scope] = count
+	}
+	return totals
 }
 
 func (r *Run) Incr(scope, key string, n int64) {
@@ -345,7 +379,9 @@ type Summary struct {
 	ProductsFailed []ProductChange
 	ProductsUpdate int64
 	Warnings       []Note
-	Counters       []Counter
+	// SuppressedWarnings is how many warnings the per-scope cap dropped from Warnings.
+	SuppressedWarnings int
+	Counters           []Counter
 
 	FailedSteps  int
 	TotalChanges int
@@ -430,6 +466,7 @@ func (r *Run) Snapshot() Summary {
 	sort.SliceStable(s.ProductsFailed, func(i, j int) bool { return s.ProductsFailed[i].SKU < s.ProductsFailed[j].SKU })
 
 	s.Warnings = append(s.Warnings, r.warnings...)
+	s.SuppressedWarnings = r.suppressedWarnings
 
 	for _, name := range r.counterOrder {
 		s.Counters = append(s.Counters, Counter{Name: name, Value: r.counters[name]})
