@@ -88,6 +88,22 @@ func stringSliceWithDefault(key string, def []string) []string {
 	return values
 }
 
+// boolWithDefault reads a permissive boolean (1/true/yes/on and their negatives).
+func boolWithDefault(key string, def bool) bool {
+	variable, isOk := os.LookupEnv(key)
+	if !isOk || strings.TrimSpace(variable) == "" {
+		return def
+	}
+	switch strings.ToLower(strings.TrimSpace(variable)) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	case "0", "false", "no", "n", "off":
+		return false
+	default:
+		return def
+	}
+}
+
 func intWithDefault(key string, def int) (int, error) {
 	variable, isOk := os.LookupEnv(key)
 	if !isOk || variable == "" {
@@ -189,7 +205,53 @@ func LoadForDailySync() (*DailyConfig, error) {
 	cfgDaily.TelegramBot.Token = stringWithDefault("TELEGRAM_TOKEN", "")
 	cfgDaily.TelegramBot.LogOutput = stringWithDefault("LOG_OUTPUT", "")
 	cfgDaily.TelegramBot.LogFileDir = stringWithDefault("LOG_FILE_DIR", "")
+
+	reportCfg, err := loadReportConfig()
+	if err != nil {
+		return nil, err
+	}
+	cfgDaily.Report = reportCfg
+
 	return cfgDaily, nil
+}
+
+// loadReportConfig reads the email-report settings. A misconfigured report must
+// never block a sync, so only malformed numbers are errors — missing values just
+// leave the report unconfigured and the caller warns.
+func loadReportConfig() (ReportConfig, error) {
+	smtpPort, err := intWithDefault("SMTP_PORT", 587)
+	if err != nil {
+		return ReportConfig{}, err
+	}
+	smtpTimeout, err := durationWithDefualt("SMTP_TIMEOUT_MS", 30000)
+	if err != nil {
+		return ReportConfig{}, err
+	}
+	maxRows, err := intWithDefault("REPORT_MAX_ROWS", 50)
+	if err != nil {
+		return ReportConfig{}, err
+	}
+
+	username := stringWithDefault("SMTP_USERNAME", "")
+	from := stringWithDefault("SMTP_FROM", username)
+
+	return ReportConfig{
+		Enabled:    boolWithDefault("REPORT_EMAIL_ENABLED", true),
+		Recipients: stringSliceWithDefault("REPORT_EMAIL_TO", nil),
+		MaxRows:    maxRows,
+		Timezone:   stringWithDefault("REPORT_TIMEZONE", "Asia/Jerusalem"),
+		SMTP: SMTPConfig{
+			Host:          stringWithDefault("SMTP_HOST", ""),
+			Port:          smtpPort,
+			Username:      username,
+			Password:      stringWithDefault("SMTP_PASSWORD", ""),
+			From:          from,
+			FromName:      stringWithDefault("SMTP_FROM_NAME", "Shopify Sync"),
+			Timeout:       smtpTimeout,
+			ImplicitTLS:   boolWithDefault("SMTP_IMPLICIT_TLS", smtpPort == 465),
+			SkipTLSVerify: boolWithDefault("SMTP_SKIP_TLS_VERIFY", false),
+		},
+	}, nil
 }
 
 func LoadForSyncOrder() (*OrdersConfig, error) {

@@ -12,6 +12,7 @@ import (
 	"shopify-exporter/internal/config"
 	"shopify-exporter/internal/domain/model"
 	"shopify-exporter/internal/logging"
+	"shopify-exporter/internal/report"
 	"strings"
 	"sync"
 	"time"
@@ -119,6 +120,8 @@ type Client struct {
 	usdMetaReady bool
 	locationMu   sync.Mutex
 	locationID   string
+	reportMu     sync.Mutex
+	reporter     report.Recorder
 }
 
 const maxPublicationBatchSize = 50

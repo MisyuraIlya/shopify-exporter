@@ -7,6 +7,7 @@ import (
 	"shopify-exporter/internal/adapters/shopify"
 	"shopify-exporter/internal/domain/model"
 	"shopify-exporter/internal/logging"
+	"shopify-exporter/internal/report"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,13 +21,39 @@ type Client struct {
 	apixClient    apix.NewClientService
 	shopifyClient shopify.NewClientService
 	logger        logging.LoggerService
+	recorder      report.Recorder
 }
 
-func NewSyncProducts(apixClient apix.NewClientService, shopifyClient shopify.NewClientService, logger logging.LoggerService) SyncProductsService {
+func NewSyncProducts(apixClient apix.NewClientService, shopifyClient shopify.NewClientService, logger logging.LoggerService, recorder report.Recorder) SyncProductsService {
 	return &Client{
 		apixClient:    apixClient,
 		shopifyClient: shopifyClient,
 		logger:        logger,
+		recorder:      recorder,
+	}
+}
+
+func (c *Client) recordCreated(sku, title string) {
+	if c.recorder != nil {
+		c.recorder.ProductCreated(sku, title)
+	}
+}
+
+func (c *Client) recordUpdated(sku string) {
+	if c.recorder != nil {
+		c.recorder.ProductUpdated(sku)
+	}
+}
+
+func (c *Client) recordFailed(sku, title string, err error) {
+	if c.recorder != nil {
+		c.recorder.ProductFailed(sku, title, err)
+	}
+}
+
+func (c *Client) recordWarning(message string) {
+	if c.recorder != nil {
+		c.recorder.Warn("products", message)
 	}
 }
 
@@ -70,6 +97,7 @@ func (c *Client) Run(ctx context.Context) error {
 				if sku == "" {
 					skippedEmptySKU.Add(1)
 					c.logger.LogWarning("Product skipped: empty SKU")
+					c.recordWarning("product skipped: empty SKU")
 					return
 				}
 
@@ -77,6 +105,7 @@ func (c *Client) Run(ctx context.Context) error {
 				if productTitle == "" {
 					skippedEmptyTitle.Add(1)
 					c.logger.LogWarning(fmt.Sprintf("Product skipped: empty title sku=%s", sku))
+					c.recordWarning(fmt.Sprintf("product skipped: empty title sku=%s", sku))
 					return
 				}
 
@@ -84,25 +113,30 @@ func (c *Client) Run(ctx context.Context) error {
 				if err != nil {
 					failedProducts.Add(1)
 					c.logger.LogError(fmt.Sprintf("Product lookup failed sku=%s", sku), err)
+					c.recordFailed(sku, productTitle, fmt.Errorf("lookup failed: %w", err))
 					return
 				}
 
 				if productExists {
 					if err := c.shopifyClient.UpdateProduct(ctx, product, productGid); err == nil {
 						updatedProducts.Add(1)
-						// c.logger.LogSuccess(fmt.Sprintf("Product updated sku=%s title=%s", v.Sku, productTitle))
+						// Counted, not listed: every existing product is re-pushed on
+						// every run, so a per-SKU list would just be the catalogue.
+						c.recordUpdated(sku)
 					} else {
 						failedProducts.Add(1)
 						c.logger.LogError(fmt.Sprintf("Product update failed sku=%s title=%s", sku, productTitle), err)
+						c.recordFailed(sku, productTitle, fmt.Errorf("update failed: %w", err))
 					}
 				} else {
 					createdGid, err := c.shopifyClient.CreateProduct(ctx, product)
 					if err != nil {
 						failedProducts.Add(1)
 						c.logger.LogError(fmt.Sprintf("Product create failed sku=%s title=%s", sku, productTitle), err)
+						c.recordFailed(sku, productTitle, fmt.Errorf("create failed: %w", err))
 					} else {
 						createdProducts.Add(1)
-						// c.logger.LogSuccess(fmt.Sprintf("Product created sku=%s title=%s", v.Sku, productTitle))
+						c.recordCreated(sku, productTitle)
 					}
 					productGid = createdGid
 				}
@@ -117,6 +151,7 @@ func (c *Client) Run(ctx context.Context) error {
 				} else {
 					failedProducts.Add(1)
 					c.logger.LogError(fmt.Sprintf("Product localization failed sku=%s title=%s", sku, productTitle), err)
+					c.recordFailed(sku, productTitle, fmt.Errorf("localization failed: %w", err))
 				}
 			}()
 		}
@@ -139,6 +174,16 @@ func (c *Client) Run(ctx context.Context) error {
 		c.logger.LogWarning(summary)
 	} else {
 		c.logger.LogSuccess(summary)
+	}
+
+	if c.recorder != nil {
+		c.recorder.Incr("products", "pages", int64(totalPages))
+		c.recorder.Incr("products", "created", createdProducts.Load())
+		c.recorder.Incr("products", "reexported", updatedProducts.Load())
+		c.recorder.Incr("products", "localization_updates", localizationUpdates.Load())
+		c.recorder.Incr("products", "failed", failedProducts.Load())
+		c.recorder.Incr("products", "skipped_empty_sku", skippedEmptySKU.Load())
+		c.recorder.Incr("products", "skipped_empty_title", skippedEmptyTitle.Load())
 	}
 
 	return nil

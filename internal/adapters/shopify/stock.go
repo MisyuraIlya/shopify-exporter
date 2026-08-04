@@ -23,6 +23,19 @@ type resolvedStockInput struct {
 	InventoryItemID string
 	Quantity        int
 	Tracked         bool
+	// BeforeQuantity is the on-hand quantity Shopify held before this run, read in
+	// the same lookup that resolves the inventory item — no extra API call. It is
+	// what turns "4,174 SKUs pushed" into the handful that actually moved.
+	BeforeQuantity int
+	BeforeKnown    bool
+}
+
+// variantInventory is what one SKU lookup yields.
+type variantInventory struct {
+	InventoryItemID string
+	Tracked         bool
+	OnHand          int
+	OnHandKnown     bool
 }
 
 const (
@@ -68,32 +81,39 @@ func (c *Client) SetOnHandQuantities(ctx context.Context, inputs []StockInput) e
 	resolved := make([]resolvedStockInput, 0, len(unique))
 	skippedMissing := 0
 	for _, input := range unique {
-		inventoryItemID, tracked, err := c.lookupInventoryItemIDBySKU(ctx, input.SKU)
+		variant, err := c.lookupInventoryItemIDBySKU(ctx, input.SKU, locationID)
 		if err != nil {
 			if missing, ok := isVariantNotFoundError(err); ok {
 				skippedMissing++
 				c.logWarning(missing.Error())
+				c.reportWarning("stock", missing.Error())
 				continue
 			}
 			return err
 		}
-		if inventoryItemID == "" {
+		if variant.InventoryItemID == "" {
 			skippedMissing++
-			c.logWarning(fmt.Sprintf("shopify inventory item not found for sku %s", input.SKU))
+			message := fmt.Sprintf("shopify inventory item not found for sku %s", input.SKU)
+			c.logWarning(message)
+			c.reportWarning("stock", message)
 			continue
 		}
 		resolved = append(resolved, resolvedStockInput{
 			SKU:             input.SKU,
-			InventoryItemID: inventoryItemID,
+			InventoryItemID: variant.InventoryItemID,
 			Quantity:        input.Quantity,
-			Tracked:         tracked,
+			Tracked:         variant.Tracked,
+			BeforeQuantity:  variant.OnHand,
+			BeforeKnown:     variant.OnHandKnown,
 		})
 		c.traceSKU(
 			input.SKU,
-			"stock resolved inventory_item_id=%s location_id=%s tracked=%t quantity=%d",
-			inventoryItemID,
+			"stock resolved inventory_item_id=%s location_id=%s tracked=%t before_quantity=%d before_known=%t quantity=%d",
+			variant.InventoryItemID,
 			locationID,
-			tracked,
+			variant.Tracked,
+			variant.OnHand,
+			variant.OnHandKnown,
 			input.Quantity,
 		)
 	}
@@ -154,6 +174,9 @@ func (c *Client) SetOnHandQuantities(ctx context.Context, inputs []StockInput) e
 			return err
 		}
 		for _, item := range batch {
+			// Recorded only after the mutation succeeded, so the report describes
+			// what Shopify actually holds rather than what we intended to send.
+			c.reportStockSeen(item)
 			c.traceSKU(
 				item.SKU,
 				"stock synced inventory_item_id=%s location_id=%s quantity=%d",
@@ -164,38 +187,61 @@ func (c *Client) SetOnHandQuantities(ctx context.Context, inputs []StockInput) e
 		}
 	}
 
+	c.reportIncr("stock", "pushed", int64(len(resolved)))
+	c.reportIncr("stock", "skipped_missing_variant", int64(skippedMissing))
 	c.logSuccess(fmt.Sprintf("shopify stock updated items=%d skipped_missing=%d", len(resolved), skippedMissing))
 	return nil
 }
 
-func (c *Client) lookupInventoryItemIDBySKU(ctx context.Context, sku string) (string, bool, error) {
+// lookupInventoryItemIDBySKU resolves one SKU's inventory item and, for the given
+// location, its current on-hand quantity. The quantity rides along on the lookup the
+// sync already performs per SKU, so before/after reporting costs no extra requests.
+func (c *Client) lookupInventoryItemIDBySKU(ctx context.Context, sku, locationID string) (variantInventory, error) {
 	sku = strings.TrimSpace(sku)
 	if sku == "" {
-		return "", false, errors.New("shopify sku is required")
+		return variantInventory{}, errors.New("shopify sku is required")
 	}
 
 	query := `
-	query inventoryItemBySku($first: Int!, $query: String!) {
+	query inventoryItemBySku($first: Int!, $query: String!, $locationId: ID!) {
 		productVariants(first: $first, query: $query) {
-			nodes { id sku inventoryItem { id tracked } }
+			nodes {
+				id
+				sku
+				inventoryItem {
+					id
+					tracked
+					inventoryLevel(locationId: $locationId) {
+						id
+						quantities(names: ["on_hand"]) { name quantity }
+					}
+				}
+			}
 		}
 	}`
 
 	var data dto.VariantInventoryQueryData
 	if err := c.graphqlRequest(ctx, query, map[string]any{
-		"first": 1,
-		"query": buildSearchQuery("sku", sku),
+		"first":      1,
+		"query":      buildSearchQuery("sku", sku),
+		"locationId": strings.TrimSpace(locationID),
 	}, &data); err != nil {
-		return "", false, err
+		return variantInventory{}, err
 	}
 	if len(data.ProductVariants.Nodes) == 0 {
-		return "", false, &variantNotFoundError{SKU: sku}
+		return variantInventory{}, &variantNotFoundError{SKU: sku}
 	}
 	node := data.ProductVariants.Nodes[0]
 	if node.InventoryItem == nil {
-		return "", false, fmt.Errorf("shopify inventory item missing for sku %s", sku)
+		return variantInventory{}, fmt.Errorf("shopify inventory item missing for sku %s", sku)
 	}
-	return strings.TrimSpace(node.InventoryItem.ID), node.InventoryItem.Tracked, nil
+	onHand, onHandKnown := node.InventoryItem.InventoryLevel.OnHand()
+	return variantInventory{
+		InventoryItemID: strings.TrimSpace(node.InventoryItem.ID),
+		Tracked:         node.InventoryItem.Tracked,
+		OnHand:          onHand,
+		OnHandKnown:     onHandKnown,
+	}, nil
 }
 
 func (c *Client) ensureInventoryItemTracked(ctx context.Context, inventoryItemID string, tracked bool) error {

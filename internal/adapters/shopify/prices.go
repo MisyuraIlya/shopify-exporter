@@ -114,22 +114,70 @@ func isVariantNotFoundError(err error) (*variantNotFoundError, bool) {
 	return nil, false
 }
 
+// variantPriceNode is the variant shape used by both the paginated and the
+// single-SKU lookup: identity plus the values a price push is about to overwrite.
+type variantPriceNode struct {
+	ID      string `json:"id,omitempty"`
+	SKU     string `json:"sku,omitempty"`
+	Price   string `json:"price,omitempty"`
+	Product struct {
+		ID string `json:"id,omitempty"`
+		// Metafield is the current custom.usd_price value. USD is served through a
+		// product metafield rather than a Shopify price list, because the Israeli
+		// single-currency gateway blocks a USD market — see
+		// .claude/PRICE_ISSUE_KNOWN_ROOT_CAUSE.md.
+		Metafield *struct {
+			Value string `json:"value,omitempty"`
+		} `json:"metafield,omitempty"`
+	} `json:"product,omitempty"`
+}
+
+// beforePrices extracts the pre-push variant price (in the shop's base currency)
+// and the current USD metafield value.
+func (n variantPriceNode) beforePrices() (base float64, baseKnown bool, usd float64, usdKnown bool) {
+	if parsed, err := strconv.ParseFloat(strings.TrimSpace(n.Price), 64); err == nil {
+		base, baseKnown = parsed, true
+	}
+	if n.Product.Metafield != nil {
+		if parsed, err := strconv.ParseFloat(strings.TrimSpace(n.Product.Metafield.Value), 64); err == nil {
+			usd, usdKnown = parsed, true
+		}
+	}
+	return base, baseKnown, usd, usdKnown
+}
+
+// variantPriceSelection is the shared GraphQL selection set for the lookups above.
+const variantPriceSelection = `
+				id
+				sku
+				price
+				product {
+					id
+					metafield(namespace: "` + usdMetafieldNamespace + `", key: "` + usdMetafieldKey + `") { value }
+				}`
+
 type productVariantListData struct {
 	ProductVariants struct {
-		Nodes []struct {
-			ID      string `json:"id,omitempty"`
-			SKU     string `json:"sku,omitempty"`
-			Product struct {
-				ID string `json:"id,omitempty"`
-			} `json:"product,omitempty"`
-		} `json:"nodes,omitempty"`
+		Nodes    []variantPriceNode  `json:"nodes,omitempty"`
 		PageInfo dto.ShopifyPageInfo `json:"pageInfo,omitempty"`
+	} `json:"productVariants"`
+}
+
+type variantPriceSearchData struct {
+	ProductVariants struct {
+		Nodes []variantPriceNode `json:"nodes,omitempty"`
 	} `json:"productVariants"`
 }
 
 type variantLookup struct {
 	VariantID string
 	ProductID string
+	// BeforeBase / BeforeUSD are the values Shopify held before this run, captured so
+	// the run report can show real before -> after moves instead of a bare count.
+	BeforeBase      float64
+	BeforeBaseKnown bool
+	BeforeUSD       float64
+	BeforeUSDKnown  bool
 }
 
 func (c *Client) EnsureIsraelMarketAndCatalog(ctx context.Context) (IsraelMarketResources, error) {
@@ -175,6 +223,7 @@ func (c *Client) UpsertPricesBatch(ctx context.Context, inputs []PriceUpsertInpu
 		if err := validatePriceInput(input); err != nil {
 			return err
 		}
+		var hint *variantLookup
 		if input.VariantID == "" && strings.TrimSpace(input.SKU) != "" && len(skuLookup) > 0 {
 			sku := strings.TrimSpace(input.SKU)
 			if lookup, ok := skuLookup[sku]; ok {
@@ -182,17 +231,22 @@ func (c *Client) UpsertPricesBatch(ctx context.Context, inputs []PriceUpsertInpu
 				if input.ProductID == "" {
 					input.ProductID = lookup.ProductID
 				}
+				found := lookup
+				hint = &found
 			} else {
 				skippedMissing++
-				c.logWarning((&variantNotFoundError{SKU: sku}).Error())
+				message := (&variantNotFoundError{SKU: sku}).Error()
+				c.logWarning(message)
+				c.reportWarning("price", message)
 				continue
 			}
 		}
-		item, err := c.resolvePriceInput(ctx, input)
+		item, err := c.resolvePriceInput(ctx, input, hint)
 		if err != nil {
 			if missing, ok := isVariantNotFoundError(err); ok {
 				skippedMissing++
 				c.logWarning(missing.Error())
+				c.reportWarning("price", missing.Error())
 				continue
 			}
 			return err
@@ -232,6 +286,8 @@ func (c *Client) UpsertPricesBatch(ctx context.Context, inputs []PriceUpsertInpu
 		return err
 	}
 
+	c.reportIncr("price", "pushed", int64(len(resolved)))
+	c.reportIncr("price", "skipped_missing_variant", int64(skippedMissing))
 	c.logSuccess(fmt.Sprintf("shopify prices updated variants=%d skipped_missing=%d", len(resolved), skippedMissing))
 	return nil
 }
@@ -1204,6 +1260,12 @@ type resolvedPriceInput struct {
 	ILSPrice     float64
 	USDCompareAt float64
 	ILSCompareAt float64
+	// Before* are the values Shopify held prior to this run, carried through so the
+	// report can show what actually moved. Known=false means Shopify had no value.
+	BeforeBase      float64
+	BeforeBaseKnown bool
+	BeforeUSD       float64
+	BeforeUSDKnown  bool
 }
 
 func validatePriceInput(input PriceUpsertInput) error {
@@ -1219,7 +1281,10 @@ func validatePriceInput(input PriceUpsertInput) error {
 	return nil
 }
 
-func (c *Client) resolvePriceInput(ctx context.Context, input PriceUpsertInput) (resolvedPriceInput, error) {
+// resolvePriceInput fills in the Shopify ids for one price row. hint carries the
+// values a bulk lookup already read for this SKU (nil when there was no bulk pass);
+// without it, the single-SKU lookup reads them itself.
+func (c *Client) resolvePriceInput(ctx context.Context, input PriceUpsertInput, hint *variantLookup) (resolvedPriceInput, error) {
 	resolved := resolvedPriceInput{
 		SKU:          strings.TrimSpace(input.SKU),
 		ProductID:    strings.TrimSpace(input.ProductID),
@@ -1229,15 +1294,27 @@ func (c *Client) resolvePriceInput(ctx context.Context, input PriceUpsertInput) 
 		USDCompareAt: input.USDCompareAt,
 		ILSCompareAt: input.ILSCompareAt,
 	}
+	if hint != nil {
+		resolved.BeforeBase = hint.BeforeBase
+		resolved.BeforeBaseKnown = hint.BeforeBaseKnown
+		resolved.BeforeUSD = hint.BeforeUSD
+		resolved.BeforeUSDKnown = hint.BeforeUSDKnown
+	}
 
 	if resolved.VariantID == "" {
-		variantID, productID, err := c.findVariantBySKU(ctx, resolved.SKU)
+		found, err := c.findVariantBySKU(ctx, resolved.SKU)
 		if err != nil {
 			return resolvedPriceInput{}, err
 		}
-		resolved.VariantID = variantID
+		resolved.VariantID = found.VariantID
 		if resolved.ProductID == "" {
-			resolved.ProductID = productID
+			resolved.ProductID = found.ProductID
+		}
+		if hint == nil {
+			resolved.BeforeBase = found.BeforeBase
+			resolved.BeforeBaseKnown = found.BeforeBaseKnown
+			resolved.BeforeUSD = found.BeforeUSD
+			resolved.BeforeUSDKnown = found.BeforeUSDKnown
 		}
 	}
 
@@ -1264,31 +1341,40 @@ func (c *Client) resolvePriceInput(ctx context.Context, input PriceUpsertInput) 
 	return resolved, nil
 }
 
-func (c *Client) findVariantBySKU(ctx context.Context, sku string) (string, string, error) {
+func (c *Client) findVariantBySKU(ctx context.Context, sku string) (variantLookup, error) {
 	sku = strings.TrimSpace(sku)
 	if sku == "" {
-		return "", "", errors.New("shopify sku is required")
+		return variantLookup{}, errors.New("shopify sku is required")
 	}
 
 	query := `
 	query productVariantBySku($first: Int!, $query: String!) {
 		productVariants(first: $first, query: $query) {
-			nodes { id sku product { id } }
+			nodes {` + variantPriceSelection + `
+			}
 		}
 	}`
 
-	var data productVariantSearchData
+	var data variantPriceSearchData
 	if err := c.graphqlRequest(ctx, query, map[string]any{
 		"first": 1,
 		"query": buildSearchQuery("sku", sku),
 	}, &data); err != nil {
-		return "", "", err
+		return variantLookup{}, err
 	}
 	if len(data.ProductVariants.Nodes) == 0 {
-		return "", "", &variantNotFoundError{SKU: sku}
+		return variantLookup{}, &variantNotFoundError{SKU: sku}
 	}
 	variant := data.ProductVariants.Nodes[0]
-	return strings.TrimSpace(variant.ID), strings.TrimSpace(variant.Product.ID), nil
+	beforeBase, beforeBaseKnown, beforeUSD, beforeUSDKnown := variant.beforePrices()
+	return variantLookup{
+		VariantID:       strings.TrimSpace(variant.ID),
+		ProductID:       strings.TrimSpace(variant.Product.ID),
+		BeforeBase:      beforeBase,
+		BeforeBaseKnown: beforeBaseKnown,
+		BeforeUSD:       beforeUSD,
+		BeforeUSDKnown:  beforeUSDKnown,
+	}, nil
 }
 
 func (c *Client) buildVariantLookup(ctx context.Context, inputs []PriceUpsertInput) (map[string]variantLookup, error) {
@@ -1310,10 +1396,7 @@ func (c *Client) buildVariantLookup(ctx context.Context, inputs []PriceUpsertInp
 	query := `
 	query productVariants($first: Int!, $after: String) {
 		productVariants(first: $first, after: $after) {
-			nodes {
-				id
-				sku
-				product { id }
+			nodes {` + variantPriceSelection + `
 			}
 			pageInfo { hasNextPage endCursor }
 		}
@@ -1338,9 +1421,14 @@ func (c *Client) buildVariantLookup(ctx context.Context, inputs []PriceUpsertInp
 			if _, exists := lookup[sku]; exists {
 				continue
 			}
+			beforeBase, beforeBaseKnown, beforeUSD, beforeUSDKnown := node.beforePrices()
 			lookup[sku] = variantLookup{
-				VariantID: strings.TrimSpace(node.ID),
-				ProductID: strings.TrimSpace(node.Product.ID),
+				VariantID:       strings.TrimSpace(node.ID),
+				ProductID:       strings.TrimSpace(node.Product.ID),
+				BeforeBase:      beforeBase,
+				BeforeBaseKnown: beforeBaseKnown,
+				BeforeUSD:       beforeUSD,
+				BeforeUSDKnown:  beforeUSDKnown,
 			}
 		}
 		if !data.ProductVariants.PageInfo.HasNextPage {
@@ -1452,6 +1540,9 @@ func (c *Client) updateBasePrices(ctx context.Context, inputs []resolvedPriceInp
 				if err != nil {
 					return err
 				}
+				// The variant price is the storefront price in the base currency,
+				// so this is the row a human means by "the price changed".
+				c.reportPriceSeen(item.SKU, currencyCode, item.BeforeBase, item.BeforeBaseKnown, priceAmount)
 				c.logSuccess(fmt.Sprintf("shopify price updated sku=%s %s=%s", item.SKU, strings.ToLower(currencyCode), formatMoneyAmount(priceAmount)))
 			}
 		}
@@ -1460,6 +1551,9 @@ func (c *Client) updateBasePrices(ctx context.Context, inputs []resolvedPriceInp
 	return nil
 }
 
+// addFixedPrices mirrors the base price into the market price list. It deliberately
+// does NOT report changes: the value is the same money as the variant price already
+// reported by updateBasePrices, and reporting both would double every row.
 func (c *Client) addFixedPrices(ctx context.Context, priceListID string, inputs []resolvedPriceInput, currencyCode string) error {
 	priceListID = strings.TrimSpace(priceListID)
 	if priceListID == "" {
@@ -1745,6 +1839,10 @@ func (c *Client) addUSDPriceMetafields(ctx context.Context, inputs []resolvedPri
 		}
 		if err := userErrorsToError("metafieldsSet", data.MetafieldsSet.UserErrors); err != nil {
 			return err
+		}
+		for _, productID := range batch {
+			item := byProduct[productID]
+			c.reportPriceSeen(item.SKU, currencyUSD, item.BeforeUSD, item.BeforeUSDKnown, item.USDPrice)
 		}
 	}
 

@@ -48,6 +48,13 @@ func NewLogger(cfg config.TelegramBotConfig) LoggerService {
 }
 
 func NewNamedLogger(cfg config.TelegramBotConfig, jobName string) LoggerService {
+	logger, _ := NewNamedLoggerWithPath(cfg, jobName)
+	return logger
+}
+
+// NewNamedLoggerWithPath is NewNamedLogger plus the log file it writes to (empty
+// when file logging is off), so a run report can point the reader at the log.
+func NewNamedLoggerWithPath(cfg config.TelegramBotConfig, jobName string) (LoggerService, string) {
 	output := strings.ToLower(strings.TrimSpace(cfg.LogOutput))
 	if output == "" {
 		output = "stdout"
@@ -87,7 +94,7 @@ func NewNamedLogger(cfg config.TelegramBotConfig, jobName string) LoggerService 
 		loggers = append(loggers, stdout, telegram)
 	case "none":
 		if len(loggers) == 0 {
-			return nil
+			return nil, ""
 		}
 	default:
 		fmt.Printf("[WARNING]: unknown LOG_OUTPUT=%q, defaulting to stdout\n", cfg.LogOutput)
@@ -95,20 +102,20 @@ func NewNamedLogger(cfg config.TelegramBotConfig, jobName string) LoggerService 
 	}
 
 	if len(loggers) == 0 {
-		return nil
+		return nil, ""
 	}
 	if len(loggers) == 1 {
 		if filePath != "" {
 			loggers[0].Log("file logger path=" + filePath)
 		}
-		return loggers[0]
+		return loggers[0], filePath
 	}
 
 	logger := &multiLogger{loggers: loggers}
 	if filePath != "" {
 		logger.Log("file logger path=" + filePath)
 	}
-	return logger
+	return logger, filePath
 }
 
 func (c *Creds) Log(value string) {

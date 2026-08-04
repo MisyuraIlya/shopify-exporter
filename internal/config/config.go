@@ -10,6 +10,44 @@ type DailyConfig struct {
 	Shopify     ShopifyConfig
 	ApiHasav    ApiHasvConfig
 	TelegramBot TelegramBotConfig
+	Report      ReportConfig
+}
+
+// ReportConfig controls the per-run email report. A run always tries to send one,
+// so an empty inbox is itself the signal that the scheduled job never started.
+type ReportConfig struct {
+	// Enabled is REPORT_EMAIL_ENABLED (default true); the report is still skipped,
+	// with a warning, when the SMTP settings or recipients are incomplete.
+	Enabled bool
+	// Recipients is REPORT_EMAIL_TO, comma separated.
+	Recipients []string
+	// MaxRows caps how many rows of each table are inlined in the email body; the
+	// attached CSV always carries every row.
+	MaxRows int
+	// Timezone renders report timestamps for a human reader (e.g. Asia/Jerusalem).
+	Timezone string
+	SMTP     SMTPConfig
+}
+
+// SMTPConfig is the relay used to deliver reports.
+type SMTPConfig struct {
+	Host     string
+	Port     int
+	Username string
+	Password string
+	From     string
+	FromName string
+	Timeout  time.Duration
+	// ImplicitTLS dials TLS directly instead of upgrading with STARTTLS. Defaults
+	// to true for port 465.
+	ImplicitTLS bool
+	// SkipTLSVerify is an escape hatch for a broken relay certificate.
+	SkipTLSVerify bool
+}
+
+// Configured reports whether the report can actually be delivered.
+func (c ReportConfig) Configured() bool {
+	return c.SMTP.Host != "" && c.SMTP.From != "" && len(c.Recipients) > 0
 }
 
 type OrdersConfig struct {

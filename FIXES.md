@@ -4,6 +4,100 @@ A log of non-obvious issues and how they were resolved. Add a new entry at the t
 
 ---
 
+## 2026-08-04 — Cron ran on time and failed every time: a backend/frontend deploy deletes the exporter image (Monday 12709784941)
+
+### Symptom
+PM: "B2B stock 0, Shopify stock 1 — customers order products that are no longer in
+stock." Overselling on the Shopify storefront.
+
+### Root cause — `docker image prune -a -f` in the *other* CI scripts
+The scheduler installed on 2026-07-14 was present and firing exactly on time, but every
+invocation died in under a second:
+
+```
+[2026-07-28T12:00:01Z] shopify-exporter cron run starting mode=stock steps=syncStocks
+Unable to find image 'shopify-exporter-sync:latest' locally
+docker: Error response from daemon: pull access denied for shopify-exporter-sync ...
+```
+
+`backend/backend_ci.sh:58` and `frontend/frontend_ci.sh:57` (in the **monorepo**, not
+this repo) both ended with `sudo docker image prune -a -f`. `-a` removes every image not
+referenced by a **running** container. The exporter is a one-shot `docker run --rm`
+container that only exists during a cron tick, so it is idle — and therefore pruned —
+whenever anyone deploys the site. The VM service account cannot pull the image back
+(`devstorage.read_only`, no `artifactregistry.reader`), so nothing recovered on its own.
+
+Timeline, from `cron-stock.log`:
+- Jul 19 12:00 last good run → **Jul 19 18:00 first failure** (a deploy that afternoon).
+- Jul 27: image restored while working ticket 12634541256 → runs healthy again.
+- **Jul 28 11:03** `symfony-frontend` container recreated (frontend deploy) → image gone.
+- Jul 28 12:00 → Aug 4 06:00: **59 consecutive failed stock runs, 7 days of frozen stock.**
+
+Nothing surfaced it. `LOG_OUTPUT` is absent from `/home/spetsar/shopify-exporter.env`, so
+it defaults to `stdout` and the configured `TELEGRAM_*` credentials were never used. A
+dead cron and a healthy cron produced identical evidence: nothing.
+
+### The fix — three layers, because one wasn't enough
+1. **Stop deleting the image.** Both CI scripts now `docker image prune -f` (dangling
+   only). Replacing `:latest` already leaves the old layer dangling, so disk is still
+   reclaimed. Same change in both files, with the reason inline.
+2. **Self-heal anyway** — the prune fix lives in a repo other people deploy from, so the
+   runner no longer trusts it. `deploy/run-shopify-exporter.sh` `docker image inspect`s
+   first and reloads from `/home/spetsar/shopify-exporter-sync.tar.gz` (left behind by
+   the deploy) when the image is missing. The runner is now **version-controlled here**
+   and installed by `deploy-sync-to-shopify.sh`; it previously existed only on the VM.
+3. **Make silence impossible** — every run now emails a report (below). No report in the
+   inbox means the job never started, which is the only signal that would have caught
+   this on day one instead of day seven.
+
+### Email report (`internal/report`, `internal/app/reporting`)
+Both sync binaries build a `report.Run`, time each step, and mail an HTML report
+(Hebrew/RTL, English technical footer) with every change attached as CSV. Sent on
+failure too. Recipients/relay via `REPORT_EMAIL_TO` + `SMTP_*` — see `.env.example`.
+
+The report shows **real before → after per SKU**, not "4,174 SKUs pushed". The before
+values ride along on lookups the sync already performs, so this costs no extra API calls:
+- **stock** — `lookupInventoryItemIDBySKU` (`stock.go`) already queries every SKU one by
+  one; it now also selects `inventoryItem.inventoryLevel(locationId:).quantities(names:
+  ["on_hand"])`. A SKU whose quantity is unchanged is counted, never listed.
+- **prices** — `buildVariantLookup` (`prices.go`) already paginates every variant; it now
+  also selects `price` and the `custom.usd_price` product metafield. `addFixedPrices`
+  deliberately does not report — it writes the same money as `updateBasePrices` and would
+  double every row.
+- **products** — created and failed are listed per SKU; "updated" is a count only, since
+  every existing product is re-pushed on every run.
+
+`BeforeKnown=false` distinguishes "Shopify had no inventory level / no price" from "it was
+zero" — worth keeping, it is the difference between a new item and a sell-out.
+
+### Gotchas found while building it
+- The alpine image had **no `ca-certificates`**, so the SMTP TLS handshake fails with an
+  unknown-authority error. Added to the Dockerfile.
+- `REPORT_TIMEZONE=Asia/Jerusalem` cannot resolve from a scratch alpine either; the
+  reporting package imports `_ "time/tzdata"` to embed the database rather than relying
+  on the OS.
+- Office 365 negotiates **AUTH LOGIN**, which Go's `net/smtp` does not implement.
+  `pickAuth` prefers PLAIN when advertised and falls back to a `loginAuth` type.
+- Hebrew + emoji in the Subject must be RFC 2047 encoded (`mime.BEncoding`), and the CSV
+  needs a UTF-8 BOM or Excel mangles the Hebrew product titles.
+
+### Verify it without waiting for a sync
+```bash
+sudo docker run --rm --env-file /home/spetsar/shopify-exporter.env \
+  --entrypoint /app/send-test-report shopify-exporter-sync:latest
+```
+Sends one sample report through the real relay. Locally: `go run ./cmd/send-test-report`.
+
+### Triage checklist — "stock is stale again"
+1. `sudo tail -20 /home/spetsar/shopify-exporter-logs/cron-stock.log` — is it
+   `Unable to find image`? Then something pruned it again; the runner should now self-heal,
+   so check the tarball exists at `/home/spetsar/shopify-exporter-sync.tar.gz`.
+2. Check the report inbox. **No mail for a scheduled slot = the job never ran.** Mail with
+   a failed step = the job ran and Shopify or the ERP rejected it.
+3. `sudo docker images | grep shopify-exporter` and `sudo crontab -l`.
+
+---
+
 ## 2026-07-27 — Inventory tracking never set by the product sync (Monday 12634541256)
 
 ### Symptom

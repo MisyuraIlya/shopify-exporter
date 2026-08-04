@@ -10,6 +10,27 @@ INSTANCE="instance-emanuel"
 REMOTE_ENV="/home/spetsar/shopify-exporter.env"
 REMOTE_LOG_DIR="/home/spetsar/shopify-exporter-logs"
 CONTAINER_LOG_DIR="/var/log/shopify-exporter"
+# Kept next to the env file so the 6h cron can reload the image after any
+# `docker image prune -a` wipes it. See FIXES.md 2026-08-04.
+REMOTE_IMAGE_TARBALL="/home/spetsar/shopify-exporter-sync.tar.gz"
+REMOTE_RUNNER="/home/spetsar/run-shopify-exporter.sh"
+
+# --no-run ships the image without starting an immediate sync. Use it when a sync is
+# already in flight, or when you only want the next cron tick to pick up the change.
+RUN_NOW=true
+for arg in "$@"; do
+  case "${arg}" in
+    --no-run) RUN_NOW=false ;;
+    -h|--help)
+      echo "usage: $(basename "$0") [--no-run]"
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: ${arg}" >&2
+      exit 2
+      ;;
+  esac
+done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOCAL_TAG="${SERVICE}:latest"
@@ -45,6 +66,12 @@ gcloud compute scp "${IMAGE_TARBALL}" "${INSTANCE}:/tmp/shopify-exporter.tar.gz"
   --project="${PROJECT_ID}" \
   --tunnel-through-iap
 
+echo "📤 Copying cron runner to ${INSTANCE}:/tmp/run-shopify-exporter.sh"
+gcloud compute scp "${SCRIPT_DIR}/deploy/run-shopify-exporter.sh" "${INSTANCE}:/tmp/run-shopify-exporter.sh" \
+  --zone="${ZONE}" \
+  --project="${PROJECT_ID}" \
+  --tunnel-through-iap
+
 echo "🔑 Deploying ${LOCAL_TAG} to ${INSTANCE}…"
 gcloud compute ssh "${INSTANCE}" \
   --zone="${ZONE}" \
@@ -55,24 +82,39 @@ gcloud compute ssh "${INSTANCE}" \
 
     echo '— Loading image (no registry pull; VM SA cannot pull)'
     sudo docker load < /tmp/shopify-exporter.tar.gz
-    rm -f /tmp/shopify-exporter.tar.gz
 
-    echo '— Removing old container (if exists)'
-    sudo docker rm -f ${SERVICE} >/dev/null 2>&1 || true
+    # Keep the tarball on the VM: a backend/frontend deploy running
+    # \`docker image prune -a -f\` deletes this image (nothing references it between
+    # cron ticks), and the VM SA cannot pull it back. run-shopify-exporter.sh reloads
+    # from here instead of failing for days. See FIXES.md 2026-08-04.
+    echo '— Storing image tarball for cron self-heal (${REMOTE_IMAGE_TARBALL})'
+    sudo mv /tmp/shopify-exporter.tar.gz ${REMOTE_IMAGE_TARBALL}
+    sudo chmod 0644 ${REMOTE_IMAGE_TARBALL}
+
+    echo '— Installing cron runner (${REMOTE_RUNNER})'
+    sudo install -o root -g root -m 0755 /tmp/run-shopify-exporter.sh ${REMOTE_RUNNER}
+    rm -f /tmp/run-shopify-exporter.sh
 
     echo '— Ensuring log directory exists'
     sudo mkdir -p ${REMOTE_LOG_DIR}
 
-    echo '— Starting new container (immediate run)'
-    sudo docker run -d --rm \
-      --name ${SERVICE} \
-      --env-file ${REMOTE_ENV} \
-      --env LOG_FILE_DIR=${CONTAINER_LOG_DIR} \
-      --volume ${REMOTE_LOG_DIR}:${CONTAINER_LOG_DIR} \
-      ${LOCAL_TAG}
+    if [ '${RUN_NOW}' = 'true' ]; then
+      echo '— Removing old container (if exists)'
+      sudo docker rm -f ${SERVICE} >/dev/null 2>&1 || true
 
-    echo '— Pruning dangling images only (keep ${LOCAL_TAG} for the 6h cron)'
+      echo '— Starting new container (immediate run)'
+      sudo docker run -d --rm \
+        --name ${SERVICE} \
+        --env-file ${REMOTE_ENV} \
+        --env LOG_FILE_DIR=${CONTAINER_LOG_DIR} \
+        --volume ${REMOTE_LOG_DIR}:${CONTAINER_LOG_DIR} \
+        ${LOCAL_TAG}
+    else
+      echo '— Skipping immediate run (--no-run); next cron tick picks up the new image'
+    fi
+
+    echo '— Pruning dangling images only (keep ${LOCAL_TAG} for the cron jobs)'
     sudo docker image prune -f
 
-    echo '✅ ${SERVICE} is now running ${LOCAL_TAG}; 6h cron will reuse the loaded image'
+    echo '✅ ${SERVICE} image is ${LOCAL_TAG}; cron reuses the loaded image'
   "
