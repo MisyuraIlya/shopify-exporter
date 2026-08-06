@@ -122,6 +122,17 @@ func (r *Reporter) Send() {
 		return
 	}
 
+	// Checked before OnlyOnChange, and deliberately stricter. "Only when something
+	// changed" was not enough at a five-minute cadence: in a live catalogue almost
+	// every tick moves at least one SKU, so it still produced ~288 mails a day, and a
+	// reader who skims 288 "3 items changed" mails is a reader who stops opening them.
+	// Under this flag the delta job is silent while healthy, failures still arrive
+	// immediately, and the once-a-day summary comes from the full run.
+	if r.cfg.OnlyOnFailure && summary.Status() != report.StatusFailed {
+		logInfo(r.logger, "email report skipped: run did not fail (REPORT_EMAIL_ONLY_ON_FAILURE)")
+		return
+	}
+
 	// A quiet delta tick is the normal case at a five-minute cadence, and 288 "nothing
 	// happened" mails a day would bury the ones that report a real change or a failure.
 	// Only a clean run with nothing to say is suppressed — anything failed or warned

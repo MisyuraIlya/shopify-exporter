@@ -62,11 +62,19 @@ type ReportConfig struct {
 	Timezone string
 	// OnlyOnChange suppresses the email when a run succeeded and changed nothing. Off
 	// by default, because "no mail in the inbox = the job never ran" is the alert for
-	// the scheduled full sync. The frequent delta cron turns it on: at 288 runs a day
-	// a mail per run would bury the ones that matter, so that job's liveness has to be
-	// watched by the heartbeat instead.
+	// the scheduled full sync.
 	OnlyOnChange bool
-	SMTP         SMTPConfig
+	// OnlyOnFailure suppresses the email unless a step actually failed, and overrides
+	// OnlyOnChange when both are set.
+	//
+	// This is what the five-minute delta cron uses. OnlyOnChange was not enough: in a
+	// live catalogue almost every tick moves at least one SKU, so it still produced
+	// ~288 mails a day. A reader who has to skim 288 "3 items changed" mails is a
+	// reader who stops opening them, which is the same as no alert at all. Failures
+	// remain immediate; the once-a-day summary comes from the full run, which mails
+	// unconditionally.
+	OnlyOnFailure bool
+	SMTP          SMTPConfig
 }
 
 // SMTPConfig is the relay used to deliver reports.

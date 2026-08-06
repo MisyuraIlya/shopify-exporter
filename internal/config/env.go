@@ -267,11 +267,12 @@ func loadReportConfig() (ReportConfig, error) {
 	from := stringWithDefault("SMTP_FROM", username)
 
 	return ReportConfig{
-		Enabled:      boolWithDefault("REPORT_EMAIL_ENABLED", true),
-		Recipients:   stringSliceWithDefault("REPORT_EMAIL_TO", nil),
-		MaxRows:      maxRows,
-		Timezone:     stringWithDefault("REPORT_TIMEZONE", "Asia/Jerusalem"),
-		OnlyOnChange: boolWithDefault("REPORT_EMAIL_ONLY_ON_CHANGE", false),
+		Enabled:       boolWithDefault("REPORT_EMAIL_ENABLED", true),
+		Recipients:    stringSliceWithDefault("REPORT_EMAIL_TO", nil),
+		MaxRows:       maxRows,
+		Timezone:      stringWithDefault("REPORT_TIMEZONE", "Asia/Jerusalem"),
+		OnlyOnChange:  boolWithDefault("REPORT_EMAIL_ONLY_ON_CHANGE", false),
+		OnlyOnFailure: boolWithDefault("REPORT_EMAIL_ONLY_ON_FAILURE", false),
 		SMTP: SMTPConfig{
 			Host:          stringWithDefault("SMTP_HOST", ""),
 			Port:          smtpPort,
