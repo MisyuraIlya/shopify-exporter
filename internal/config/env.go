@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -211,8 +212,38 @@ func LoadForDailySync() (*DailyConfig, error) {
 		return nil, err
 	}
 	cfgDaily.Report = reportCfg
+	cfgDaily.Stock = loadStockConfig(cfgDaily.TelegramBot.LogFileDir)
+	// One read, two consumers: the use case decides whether to persist the snapshot,
+	// the adapter decides whether to send mutations at all.
+	cfgDaily.Shopify.StockDryRun = cfgDaily.Stock.DryRun
 
 	return cfgDaily, nil
+}
+
+// loadStockConfig reads the stock sync mode and snapshot location. An unrecognised
+// SYNC_STOCK_MODE is not an error: it degrades to a full push, which is correct but
+// slow, rather than refusing to sync stock at all. The caller logs the mode it ended
+// up with, so a typo is visible in the run report.
+func loadStockConfig(logFileDir string) StockConfig {
+	mode := strings.ToLower(strings.TrimSpace(stringWithDefault("SYNC_STOCK_MODE", StockModeFull)))
+	if mode != StockModeDelta {
+		mode = StockModeFull
+	}
+
+	statePath := strings.TrimSpace(stringWithDefault("SYNC_STOCK_STATE_FILE", ""))
+	if statePath == "" {
+		dir := strings.TrimSpace(logFileDir)
+		if dir == "" {
+			dir = "logs"
+		}
+		statePath = filepath.Join(dir, "stock-state.json")
+	}
+
+	return StockConfig{
+		Mode:      mode,
+		StatePath: statePath,
+		DryRun:    boolWithDefault("SYNC_STOCK_DRY_RUN", false),
+	}
 }
 
 // loadReportConfig reads the email-report settings. A misconfigured report must
@@ -236,10 +267,11 @@ func loadReportConfig() (ReportConfig, error) {
 	from := stringWithDefault("SMTP_FROM", username)
 
 	return ReportConfig{
-		Enabled:    boolWithDefault("REPORT_EMAIL_ENABLED", true),
-		Recipients: stringSliceWithDefault("REPORT_EMAIL_TO", nil),
-		MaxRows:    maxRows,
-		Timezone:   stringWithDefault("REPORT_TIMEZONE", "Asia/Jerusalem"),
+		Enabled:      boolWithDefault("REPORT_EMAIL_ENABLED", true),
+		Recipients:   stringSliceWithDefault("REPORT_EMAIL_TO", nil),
+		MaxRows:      maxRows,
+		Timezone:     stringWithDefault("REPORT_TIMEZONE", "Asia/Jerusalem"),
+		OnlyOnChange: boolWithDefault("REPORT_EMAIL_ONLY_ON_CHANGE", false),
 		SMTP: SMTPConfig{
 			Host:          stringWithDefault("SMTP_HOST", ""),
 			Port:          smtpPort,

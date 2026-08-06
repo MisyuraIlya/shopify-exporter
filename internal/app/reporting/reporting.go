@@ -122,6 +122,15 @@ func (r *Reporter) Send() {
 		return
 	}
 
+	// A quiet delta tick is the normal case at a five-minute cadence, and 288 "nothing
+	// happened" mails a day would bury the ones that report a real change or a failure.
+	// Only a clean run with nothing to say is suppressed — anything failed or warned
+	// still goes out.
+	if r.cfg.OnlyOnChange && summary.TotalChanges == 0 && summary.Status() == report.StatusOK {
+		logInfo(r.logger, "email report skipped: nothing changed (REPORT_EMAIL_ONLY_ON_CHANGE)")
+		return
+	}
+
 	smtpCfg := report.SMTPConfig{
 		Host:          r.cfg.SMTP.Host,
 		Port:          r.cfg.SMTP.Port,

@@ -36,40 +36,61 @@ func NewStockService(Config config.ApiHasvConfig, httpClient *http.Client, logge
 	}
 }
 
+func (c *NewStockS) logError(message string, err error) {
+	if c.logger == nil || err == nil {
+		return
+	}
+	c.logger.LogError(message, err)
+}
+
+// FetchStocks pulls the whole catalogue's warehouse balances in one request.
+//
+// Every failure path returns an error. It used to log and fall through, which meant a
+// network failure dereferenced a nil response (panic), and a malformed body yielded an
+// empty slice — sync_stocks then logged "no valid SKUs" and returned success while
+// nothing had been synced. At four runs a day that was rare; on a five-minute cadence
+// it is routine, and a silent success is worse than a loud failure.
 func (c *NewStockS) FetchStocks(ctx context.Context) ([]model.Stock, error) {
 	body := map[string]any{
 		"dbName": "EMANUEL",
 	}
-	url := c.Config.BaseUrl + ENDPOINT
+	url := strings.TrimRight(strings.TrimSpace(c.Config.BaseUrl), "/") + ENDPOINT
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {
-		c.logger.LogError("ERROR marshel json", err)
+		c.logError("apix stocks marshal failed", err)
+		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
 
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		c.logError("apix stocks request build failed", err)
+		return nil, err
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", c.Config.Token)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		c.logger.LogError("ERROR response json", err)
+		c.logError("apix stocks request failed", err)
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	parsed, err := io.ReadAll(resp.Body)
 	if err != nil {
-		c.logger.LogError("ERROR response json", err)
+		c.logError("apix stocks response read failed", err)
+		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		statusErr := fmt.Errorf("apix categories request failed: %s", resp.Status)
-		c.logger.LogError("error response status", statusErr)
+		statusErr := fmt.Errorf("apix stocks request failed: %s", resp.Status)
+		c.logError("apix stocks response status", statusErr)
 		return nil, statusErr
 	}
 
 	var result dto.StockResponse
-	errUnmarshel := json.Unmarshal(parsed, &result)
-	if errUnmarshel != nil {
-		c.logger.LogError("ERROR response json", errUnmarshel)
+	if err := json.Unmarshal(parsed, &result); err != nil {
+		c.logError("apix stocks response unmarshal failed", err)
+		return nil, err
 	}
 
 	resData := make([]model.Stock, 0, len(result.Items))

@@ -11,6 +11,40 @@ type DailyConfig struct {
 	ApiHasav    ApiHasvConfig
 	TelegramBot TelegramBotConfig
 	Report      ReportConfig
+	Stock       StockConfig
+}
+
+// Stock sync modes for SYNC_STOCK_MODE.
+const (
+	// StockModeFull pushes the whole ERP feed, skipping only SKUs Shopify already
+	// holds at the right quantity. This is the reconciliation pass: it is the run that
+	// corrects drift Shopify caused on its own (a fulfilment moving on_hand).
+	StockModeFull = "full"
+	// StockModeDelta pushes only SKUs whose ERP quantity changed since the last
+	// successful run, read from the on-disk snapshot. Cheap enough for a cron that
+	// fires every few minutes; relies on a periodic full run to catch drift.
+	StockModeDelta = "delta"
+)
+
+// StockConfig controls how much of the ERP feed a stock run pushes.
+type StockConfig struct {
+	// Mode is StockModeFull (default) or StockModeDelta. An unrecognised value falls
+	// back to full: pushing too much is slow, pushing too little oversells.
+	Mode string
+	// StatePath is where the delta snapshot lives. Defaults to stock-state.json under
+	// LOG_FILE_DIR, which is the volume-mounted directory in the container, so the
+	// snapshot survives the one-shot `docker run` that produced it.
+	StatePath string
+	// DryRun resolves everything and reports exactly what would move, without writing
+	// a single mutation to Shopify. Reads still happen — that is what produces the
+	// before -> after list. The snapshot is deliberately not written either, so a dry
+	// run cannot make the next real delta believe those quantities were pushed.
+	DryRun bool
+}
+
+// IsDelta reports whether this run should push only ERP changes.
+func (c StockConfig) IsDelta() bool {
+	return c.Mode == StockModeDelta
 }
 
 // ReportConfig controls the per-run email report. A run always tries to send one,
@@ -26,7 +60,13 @@ type ReportConfig struct {
 	MaxRows int
 	// Timezone renders report timestamps for a human reader (e.g. Asia/Jerusalem).
 	Timezone string
-	SMTP     SMTPConfig
+	// OnlyOnChange suppresses the email when a run succeeded and changed nothing. Off
+	// by default, because "no mail in the inbox = the job never ran" is the alert for
+	// the scheduled full sync. The frequent delta cron turns it on: at 288 runs a day
+	// a mail per run would bury the ones that matter, so that job's liveness has to be
+	// watched by the heartbeat instead.
+	OnlyOnChange bool
+	SMTP         SMTPConfig
 }
 
 // SMTPConfig is the relay used to deliver reports.
@@ -68,6 +108,12 @@ type ShopifyConfig struct {
 	// Hashavshevet and never appear in /stocksProducts. Tracking them would pin them
 	// at quantity 0 and make them unbuyable, breaking the special-order flow.
 	UntrackedSkuPrefixes []string
+	// StockDryRun mirrors StockConfig.DryRun. It lives here too because the adapter is
+	// where the mutations are, and it must be the thing that refuses to send them —
+	// enforcing it only in the use case would leave every other caller of
+	// SetOnHandQuantities able to write during a dry run. Both fields are filled from
+	// one read of SYNC_STOCK_DRY_RUN.
+	StockDryRun bool
 	// Optional pricing settings used by price sync.
 	BaseCurrency               string
 	InternationalMarketHandle  string
