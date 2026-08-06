@@ -71,14 +71,17 @@ if [ -n "${STEPS}" ]; then
   ENV_ARGS+=(--env "SYNC_ONLY_STEPS=${STEPS}")
 fi
 
-# The frequent tick pushes only what the ERP changed, and stays quiet when that is
-# nothing. Without the second flag a five-minute cadence mails ~288 "nothing happened"
-# reports a day and the ones that matter get lost. Liveness for THIS job is therefore
-# the log file, not the inbox — the daily full run keeps mailing unconditionally, so an
-# empty inbox in the morning still means the scheduler is dead.
+# The frequent tick pushes only what the ERP changed, and mails only when a step
+# actually fails.
+#
+# ONLY_ON_CHANGE was tried first and was not enough: a live catalogue moves at least one
+# SKU on nearly every tick, so it still sent ~288 mails a day and the recipients stopped
+# reading them. ONLY_ON_FAILURE keeps the inbox at one scheduled mail a day — from the
+# daily full run, which mails unconditionally — while a broken delta tick still lands
+# immediately. Liveness for THIS job is the cron log, not the inbox.
 if [ "${MODE}" = "delta" ]; then
   ENV_ARGS+=(--env "SYNC_STOCK_MODE=delta")
-  ENV_ARGS+=(--env "REPORT_EMAIL_ONLY_ON_CHANGE=true")
+  ENV_ARGS+=(--env "REPORT_EMAIL_ONLY_ON_FAILURE=true")
 fi
 
 # Foreground run: flock holds the lock for the full run so the next tick of the
